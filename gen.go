@@ -35,6 +35,12 @@ func Map[A, B any](g Gen[A], f func(A) B) Gen[B] {
 	return func(t *Tape) B { return f(g(t)) }
 }
 
+// Or returns a generator that defers to g or one of alts.
+// It is OneOf as a method, for left-to-right composition.
+func (g Gen[T]) Or(alts ...Gen[T]) Gen[T] {
+	return OneOf(append([]Gen[T]{g}, alts...)...)
+}
+
 // SliceOf returns a generator of slices of up to max values of g.
 func SliceOf[T any](g Gen[T], max int) Gen[[]T] {
 	return func(t *Tape) []T {
