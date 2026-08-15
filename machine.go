@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -49,6 +50,12 @@ type Machine[S any] struct {
 	// so a failure found by Run becomes a seed input replayed by both
 	// Run and the fuzz target.
 	Name string
+	// Bubble runs each input's op sequence inside a testing/synctest
+	// bubble: time is virtual, and the bubble's exit check reports any
+	// goroutine the sequence left durably blocked, making every case a
+	// goroutine-leak check. Ops must not depend on real time or on
+	// goroutines started outside the bubble.
+	Bubble bool
 }
 
 // Fuzz registers the machine as the fuzz function of f. Corpus files,
@@ -94,10 +101,21 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	}
 }
 
-// runTape decodes data into one operation sequence and applies it,
+// runTape runs one input, inside a synctest bubble if Bubble is set.
+// The bubble goes here rather than around Run or Fuzz because both run
+// each case as a subtest, and t.Run panics inside a bubble.
+func (m Machine[S]) runTape(t *testing.T, data []byte) {
+	if !m.Bubble {
+		m.runOps(t, data)
+		return
+	}
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data) })
+}
+
+// runOps decodes data into one operation sequence and applies it,
 // checking the invariant after every applied op. The decoded sequence
 // is logged if the test fails.
-func (m Machine[S]) runTape(t *testing.T, data []byte) {
+func (m Machine[S]) runOps(t *testing.T, data []byte) {
 	if len(m.Ops) == 0 {
 		t.Fatal("fuzztape: Machine has no Ops")
 	}

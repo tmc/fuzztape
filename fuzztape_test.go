@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestTapeZero(t *testing.T) {
@@ -174,6 +176,58 @@ func TestMachineCanary(t *testing.T) {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("child output missing %q; output:\n%s", want, out)
 		}
+	}
+}
+
+// worker is a system under test exercised under Bubble: "spawn" starts
+// a goroutine that sleeps for up to an hour before reporting, and waits
+// for the report; "sleep" and "settle" advance and quiesce the bubble.
+// The sleeps cost no real time, and the bubble's exit check fails the
+// case if any goroutine outlives the op sequence.
+type worker struct {
+	spawned, reported int
+}
+
+var workers = Machine[*worker]{
+	Bubble: true,
+	Init:   func(t *testing.T) *worker { return new(worker) },
+	Ops: []Op[*worker]{
+		{Name: "spawn", Weight: 3, Apply: func(w *worker, t *Tape) error {
+			d := time.Duration(t.IntN(3600)) * time.Second
+			w.spawned++
+			done := make(chan struct{})
+			go func() {
+				time.Sleep(d)
+				close(done)
+			}()
+			<-done
+			w.reported++
+			return nil
+		}},
+		{Name: "sleep", Apply: func(w *worker, t *Tape) error {
+			time.Sleep(time.Duration(t.IntN(3600)) * time.Second)
+			return nil
+		}},
+		{Name: "settle", Apply: func(w *worker, t *Tape) error {
+			synctest.Wait()
+			return nil
+		}},
+	},
+	Check: func(t *testing.T, w *worker) {
+		if w.reported != w.spawned {
+			t.Fatalf("%d reports from %d goroutines", w.reported, w.spawned)
+		}
+	},
+}
+
+// TestMachineBubble runs a machine whose ops spawn goroutines that sleep
+// for virtual hours. It passes only if every case ends with no goroutine
+// left durably blocked and the sleeps cost no real time.
+func TestMachineBubble(t *testing.T) {
+	start := time.Now()
+	workers.Run(t, 50)
+	if d := time.Since(start); d > 30*time.Second {
+		t.Errorf("Run took %v of real time; sleeps were not virtual", d)
 	}
 }
 
