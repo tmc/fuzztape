@@ -1,17 +1,3 @@
-// Package fuzztape adapts go test -fuzz for typed and stateful testing.
-//
-// A Tape reads a fuzz input as a sequence of typed decisions. Reads past
-// the end of the input return zero values, so every input decodes to a
-// valid value and shorter inputs decode to simpler ones. Consumption is
-// strictly front-to-back, which lets the fuzzing engine's byte-level
-// minimizer shrink decoded values and operation sequences without knowing
-// they exist: truncating an input truncates the decoded behavior.
-//
-// A Gen composes typed generators over a Tape. A Machine runs a stateful
-// property test — a bounded operation sequence with an invariant checked
-// after every step — either under go test -fuzz (Machine.Fuzz) or as a
-// bounded number of pseudo-random cases inside an ordinary test
-// (Machine.Run).
 package fuzztape
 
 import "encoding/binary"
