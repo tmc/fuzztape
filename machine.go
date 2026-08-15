@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -77,7 +78,7 @@ type Machine[S any] struct {
 // any other fuzz target.
 func (m Machine[S]) Fuzz(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		m.runTape(t, data, true)
+		m.runTape(t, data, true, nil)
 	})
 }
 
@@ -99,7 +100,7 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	for i := range iters {
 		data := make([]byte, 16+rng.Intn(496))
 		rng.Read(data)
-		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true) }) {
+		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil) }) {
 			continue
 		}
 		data = m.shrink(t, data)
@@ -130,7 +131,7 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 // stacks are worth printing only for the input Run failed on, not for
 // the shrink attempts that follow, which by then are reporting the
 // leaks of every attempt before them.
-func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool) {
+func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]int) {
 	var applied []string
 	defer func() {
 		if m.Bubble {
@@ -147,10 +148,28 @@ func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool) {
 		}
 	}()
 	if !m.Bubble {
-		m.runOps(t, data, &applied)
+		m.runOps(t, data, &applied, splits)
 		return
 	}
-	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied) })
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied, splits) })
+}
+
+// Splits reports the tape offsets at which the ops decoded from data
+// begin, by replaying data against a fresh system in a subtest of t.
+// The final element is the offset just past the last byte the sequence
+// consumed, so data[splits[i]:splits[i+1]] holds the bytes of op i.
+// Cutting or splicing inputs at these offsets edits whole operations.
+//
+// The replay applies the sequence for real: Init runs, ops run, and if
+// the input fails the machine the failure is reported on the subtest.
+// Under Bubble each replay that fails its exit check leaves another
+// set of blocked goroutines behind in an abandoned bubble — bounded
+// and harmless, as for shrink attempts, but visible in goroutine
+// dumps.
+func (m Machine[S]) Splits(t *testing.T, data []byte) []int {
+	var splits []int
+	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits) })
+	return splits
 }
 
 // bubbleStacks returns the stacks of the goroutines running in a
@@ -172,12 +191,16 @@ func bubbleStacks() string {
 // checking the invariant after every applied op. It appends the name of
 // each op it applies to *applied, which outlives it so that the caller
 // can report the sequence even when the failure surfaces after runOps
-// has returned.
-func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string) {
+// has returned. If splits is non-nil it records each op's starting tape
+// offset, plus one final offset past the last byte consumed.
+func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string, splits *[]int) {
 	if len(m.Ops) == 0 {
 		t.Fatal("fuzztape: Machine has no Ops")
 	}
 	tape := New(data)
+	if splits != nil {
+		defer func() { *splits = append(*splits, tape.Pos()) }()
+	}
 	s := m.Init(t)
 	maxOps := m.MaxOps
 	if maxOps <= 0 {
@@ -199,6 +222,9 @@ func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string) {
 		if len(enabled) == 0 {
 			return
 		}
+		if splits != nil {
+			*splits = append(*splits, tape.Pos())
+		}
 		w := tape.IntN(total)
 		var op *Op[S]
 		for _, o := range enabled {
@@ -219,17 +245,20 @@ func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string) {
 	}
 }
 
-// shrink reduces a failing input while it keeps failing: first by
-// truncation, then by zeroing individual bytes. Because reads past the
-// end of the input and zero bytes both decode to the simplest choice,
-// byte-level edits shrink the decoded op sequence and its values.
-// Attempts run as subtests of t (which is already failing).
+// shrink reduces a failing input while it keeps failing: by truncation,
+// then by deleting the bytes of whole middle ops, then by bisecting
+// individual bytes toward zero. Because reads past the end of the input
+// and zero bytes both decode to the simplest choice, byte-level edits
+// shrink the decoded op sequence and its values. Attempts run as
+// subtests of t (which is already failing).
 func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
 	attempts := 0
 	fails := func(d []byte) bool {
 		attempts++
-		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false) })
+		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, nil) })
 	}
+
+	// Truncation: halve, then trim single bytes.
 	for len(data) > 0 && attempts < 200 {
 		cut := data[:len(data)/2]
 		if !fails(cut) {
@@ -240,14 +269,51 @@ func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
 	for len(data) > 0 && attempts < 200 && fails(data[:len(data)-1]) {
 		data = data[:len(data)-1]
 	}
-	for i := 0; i < len(data) && attempts < 250; i++ {
-		if data[i] == 0 {
+
+	// Chunk deletion: drop whole middle ops, last to first, so a
+	// failure needing only its first and final ops shrinks past what
+	// truncation alone can reach. Deleting a chunk changes how the rest
+	// decodes, so the op boundaries are recomputed after each success.
+	// The boundary replay itself runs as a shrink attempt. This phase
+	// gets its own budget rather than the tail of truncation's: it is
+	// the one that reaches failures truncation cannot.
+	for stop := attempts + 80; attempts < stop; {
+		var splits []int
+		attempts++
+		t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, data, false, &splits) })
+		deleted := false
+		for i := len(splits) - 2; i >= 0 && attempts < stop; i-- {
+			cut := slices.Concat(data[:splits[i]], data[splits[i+1]:])
+			if len(cut) < len(data) && fails(cut) {
+				data = cut
+				deleted = true
+				break
+			}
+		}
+		if !deleted {
+			break
+		}
+	}
+
+	// Value bisection: walk each byte toward zero while the input
+	// keeps failing, trying zero first and then repeated halving down
+	// to 1 (zero itself was just proven to pass, so halving stops
+	// above it).
+	stop := attempts + 100
+	for i := 0; i < len(data) && attempts < stop; i++ {
+		try := func(v byte) bool {
+			edited := slices.Clone(data)
+			edited[i] = v
+			if fails(edited) {
+				data = edited
+				return true
+			}
+			return false
+		}
+		if data[i] == 0 || try(0) {
 			continue
 		}
-		zeroed := append([]byte(nil), data...)
-		zeroed[i] = 0
-		if fails(zeroed) {
-			data = zeroed
+		for data[i] > 1 && attempts < stop && try(data[i]/2) {
 		}
 	}
 	return data

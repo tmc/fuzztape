@@ -154,7 +154,27 @@ func TestMachineRunPasses(t *testing.T) {
 func TestMachineFuzzOpSelection(t *testing.T) {
 	// A zero tape of any length decodes to a prefix of "inc" ops (the
 	// first enabled op) and never trips the clean invariant.
-	clean.runTape(t, make([]byte, 64), true)
+	clean.runTape(t, make([]byte, 64), true, nil)
+}
+
+func TestMachineSplits(t *testing.T) {
+	// Selector 0 decodes IntN in one byte, so each of the five zero
+	// bytes is exactly one op: boundaries at 0..5.
+	splits := clean.Splits(t, make([]byte, 5))
+	want := []int{0, 1, 2, 3, 4, 5}
+	if len(splits) != len(want) {
+		t.Fatalf("Splits = %v, want %v", splits, want)
+	}
+	for i := range want {
+		if splits[i] != want[i] {
+			t.Fatalf("Splits = %v, want %v", splits, want)
+		}
+	}
+	// A 0xff selector consumes 1 selector + 8 payload bytes.
+	splits = clean.Splits(t, bytes.Repeat([]byte{0xff}, 9))
+	if len(splits) != 2 || splits[0] != 0 || splits[1] != 9 {
+		t.Fatalf("Splits(ff×9) = %v, want [0 9]", splits)
+	}
 }
 
 // TestMachineCanary proves the harness has teeth: a planted invariant

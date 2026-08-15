@@ -20,6 +20,12 @@ func (t *Tape) Done() bool {
 	return t.pos >= len(t.data)
 }
 
+// Pos returns the number of input bytes consumed so far. Reads past
+// the end of the input do not advance it.
+func (t *Tape) Pos() int {
+	return t.pos
+}
+
 // Byte returns the next byte, or 0 when the input is exhausted.
 func (t *Tape) Byte() byte {
 	if t.pos >= len(t.data) {
