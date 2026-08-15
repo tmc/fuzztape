@@ -154,7 +154,7 @@ func TestMachineRunPasses(t *testing.T) {
 func TestMachineFuzzOpSelection(t *testing.T) {
 	// A zero tape of any length decodes to a prefix of "inc" ops (the
 	// first enabled op) and never trips the clean invariant.
-	clean.runTape(t, make([]byte, 64))
+	clean.runTape(t, make([]byte, 64), true)
 }
 
 // TestMachineCanary proves the harness has teeth: a planted invariant
@@ -228,6 +228,45 @@ func TestMachineBubble(t *testing.T) {
 	workers.Run(t, 50)
 	if d := time.Since(start); d > 30*time.Second {
 		t.Errorf("Run took %v of real time; sleeps were not virtual", d)
+	}
+}
+
+// leaker is the Bubble canary system under test: "leak" starts a
+// goroutine that blocks forever, which the bubble's exit check must
+// catch, and "noop" gives the shrinker something to remove.
+var leaker = Machine[*counter]{
+	Bubble: true,
+	Init:   func(t *testing.T) *counter { return new(counter) },
+	Ops: []Op[*counter]{
+		{Name: "noop", Weight: 3, Apply: func(c *counter, t *Tape) error { c.n++; return nil }},
+		{Name: "leak", Apply: func(c *counter, t *Tape) error {
+			go func() { <-make(chan struct{}) }()
+			return nil
+		}},
+	},
+}
+
+// TestMachineBubbleCanary proves a leak is an ordinary failure rather
+// than the end of the test binary: the bubble reports the blocked
+// goroutine's stack, and Run goes on to shrink the input and save it,
+// which it can only do if it survived the bubble's panic. The failing
+// Run executes in a child process so the failure does not fail this
+// test.
+func TestMachineBubbleCanary(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		leaker.Run(t, 200)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestMachineBubbleCanary$", "-test.v")
+	cmd.Env = append(os.Environ(), "FUZZTAPE_CANARY=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("planted leak not found in 200 cases; output:\n%s", out)
+	}
+	for _, want := range []string{"deadlock", "synctest bubble", "op sequence", "shrunk failing input"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("child output missing %q; output:\n%s", want, out)
+		}
 	}
 }
 

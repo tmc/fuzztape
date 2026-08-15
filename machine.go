@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -64,10 +65,10 @@ type Machine[S any] struct {
 	// before its exit check. A goroutine stopped on the outer test's
 	// cleanup is still blocked at exit and fails every case.
 	//
-	// A leak fails by panicking rather than by t.Fatalf, which ends the
-	// test binary: Run reports the goroutine stacks and the seed to
-	// replay with -fuzztape.seed, but does not shrink the input, log the
-	// op sequence, or save a corpus file for Name.
+	// A leak is reported with the stacks of the goroutines left blocked,
+	// and shrinks like any other failure. The goroutines themselves stay
+	// blocked for the rest of the run, in a bubble nothing else can
+	// reach.
 	Bubble bool
 }
 
@@ -76,7 +77,7 @@ type Machine[S any] struct {
 // any other fuzz target.
 func (m Machine[S]) Fuzz(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		m.runTape(t, data)
+		m.runTape(t, data, true)
 	})
 }
 
@@ -98,7 +99,7 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	for i := range iters {
 		data := make([]byte, 16+rng.Intn(496))
 		rng.Read(data)
-		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data) }) {
+		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true) }) {
 			continue
 		}
 		data = m.shrink(t, data)
@@ -114,21 +115,65 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	}
 }
 
-// runTape runs one input, inside a synctest bubble if Bubble is set.
-// The bubble goes here rather than around Run or Fuzz because both run
-// each case as a subtest, and t.Run panics inside a bubble.
-func (m Machine[S]) runTape(t *testing.T, data []byte) {
+// runTape runs one input, inside a synctest bubble if Bubble is set,
+// and logs the op sequence if the input fails. The bubble goes here
+// rather than around Run or Fuzz because both run each case as a
+// subtest, and t.Run panics inside a bubble.
+//
+// A bubble reports a goroutine the sequence left blocked by panicking
+// out of synctest.Test, after the sequence itself has returned. Turning
+// that back into an ordinary failure is what keeps the rest of the
+// package working on it: without the recover the test binary dies on
+// the spot, with no shrinking, no op sequence, and no corpus file.
+// Recovering is safe because the blocked goroutines stay in their
+// abandoned bubble, where they can no longer affect later inputs. The
+// stacks are worth printing only for the input Run failed on, not for
+// the shrink attempts that follow, which by then are reporting the
+// leaks of every attempt before them.
+func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool) {
+	var applied []string
+	defer func() {
+		if m.Bubble {
+			if r := recover(); r != nil {
+				if stacks {
+					t.Errorf("fuzztape: %v\n\n%s", r, bubbleStacks())
+				} else {
+					t.Errorf("fuzztape: %v", r)
+				}
+			}
+		}
+		if t.Failed() {
+			t.Logf("fuzztape: op sequence (%d ops):\n\t%s", len(applied), strings.Join(applied, "\n\t"))
+		}
+	}()
 	if !m.Bubble {
-		m.runOps(t, data)
+		m.runOps(t, data, &applied)
 		return
 	}
-	synctest.Test(t, func(t *testing.T) { m.runOps(t, data) })
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied) })
+}
+
+// bubbleStacks returns the stacks of the goroutines running in a
+// synctest bubble, which for a bubble that just failed its exit check
+// are the goroutines it left blocked.
+func bubbleStacks() string {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var keep []string
+	for g := range strings.SplitSeq(string(buf), "\n\n") {
+		if strings.Contains(g, "synctest bubble") {
+			keep = append(keep, g)
+		}
+	}
+	return strings.Join(keep, "\n\n")
 }
 
 // runOps decodes data into one operation sequence and applies it,
-// checking the invariant after every applied op. The decoded sequence
-// is logged if the test fails.
-func (m Machine[S]) runOps(t *testing.T, data []byte) {
+// checking the invariant after every applied op. It appends the name of
+// each op it applies to *applied, which outlives it so that the caller
+// can report the sequence even when the failure surfaces after runOps
+// has returned.
+func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string) {
 	if len(m.Ops) == 0 {
 		t.Fatal("fuzztape: Machine has no Ops")
 	}
@@ -138,12 +183,6 @@ func (m Machine[S]) runOps(t *testing.T, data []byte) {
 	if maxOps <= 0 {
 		maxOps = 64
 	}
-	var applied []string
-	defer func() {
-		if t.Failed() {
-			t.Logf("fuzztape: op sequence (%d ops):\n\t%s", len(applied), strings.Join(applied, "\n\t"))
-		}
-	}()
 	for range maxOps {
 		if tape.Done() {
 			return
@@ -170,10 +209,10 @@ func (m Machine[S]) runOps(t *testing.T, data []byte) {
 			}
 		}
 		if err := op.Apply(s, tape); err != nil {
-			applied = append(applied, op.Name+" (rejected: "+err.Error()+")")
+			*applied = append(*applied, op.Name+" (rejected: "+err.Error()+")")
 			continue
 		}
-		applied = append(applied, op.Name)
+		*applied = append(*applied, op.Name)
 		if m.Check != nil {
 			m.Check(t, s)
 		}
@@ -189,7 +228,7 @@ func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
 	attempts := 0
 	fails := func(d []byte) bool {
 		attempts++
-		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d) })
+		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false) })
 	}
 	for len(data) > 0 && attempts < 200 {
 		cut := data[:len(data)/2]
