@@ -43,7 +43,9 @@ type Machine[S any] struct {
 	Ops []Op[S]
 	// Check asserts the invariant, failing with t.Fatalf.
 	Check func(t *testing.T, s S)
-	// MaxOps bounds the ops decoded per input; 0 means 64.
+	// MaxOps bounds the ops decoded per input; 0 means 64. It is only an
+	// upper bound: a sequence also ends when the input runs out, which
+	// for short inputs happens well before MaxOps.
 	MaxOps int
 	// Name, if set, is the fuzz target name (e.g. "FuzzStreamMachine")
 	// under which Run saves shrunk failing inputs to testdata/fuzz/,
@@ -55,6 +57,17 @@ type Machine[S any] struct {
 	// goroutine the sequence left durably blocked, making every case a
 	// goroutine-leak check. Ops must not depend on real time or on
 	// goroutines started outside the bubble.
+	//
+	// Init runs inside the bubble, so a goroutine it starts must be
+	// stopped inside the bubble too — by an op, or by a cleanup Init
+	// registers on the *testing.T it is passed, which the bubble runs
+	// before its exit check. A goroutine stopped on the outer test's
+	// cleanup is still blocked at exit and fails every case.
+	//
+	// A leak fails by panicking rather than by t.Fatalf, which ends the
+	// test binary: Run reports the goroutine stacks and the seed to
+	// replay with -fuzztape.seed, but does not shrink the input, log the
+	// op sequence, or save a corpus file for Name.
 	Bubble bool
 }
 
