@@ -96,3 +96,22 @@ func (t *Tape) Bytes(max int) []byte {
 func Pick[T any](t *Tape, opts []T) T {
 	return opts[t.IntN(len(opts))]
 }
+
+// Draw returns a value of g decoded from the tape. It is g(t) written
+// left to right, so a chain of generators reads in the order it runs.
+func (t *Tape) Draw[T any](g Gen[T]) T {
+	return g(t)
+}
+
+// Pick returns one of opts, chosen by the tape. It is the free
+// function [Pick] as a method.
+func (t *Tape) Pick[T any](opts []T) T {
+	return Pick(t, opts)
+}
+
+// OneOf returns a value drawn from one of gens, chosen by the tape.
+// Note that it draws a value, where the free function [OneOf] builds
+// the generator that draws one.
+func (t *Tape) OneOf[T any](gens ...Gen[T]) T {
+	return OneOf(gens...)(t)
+}
