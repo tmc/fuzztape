@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          # The module's language floor is go 1.27: the package uses
+          # generic methods, which no earlier toolchain parses — gofmt
+          # included, which is why the format check below needs it too.
+          go-version: '1.27.0'
+          cache-dependency-path: go.mod
+      - name: Build and test
+        run: |
+          go build ./...
+          go test ./...
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            gofmt -l .
+            echo "files are not gofmt'd"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Fuzz smoke test
+        run: go test -run '^$' -fuzz FuzzMachineCanaryClean -fuzztime 30s .
