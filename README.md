@@ -1,5 +1,7 @@
 # fuzztape
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/tmc/fuzztape.svg)](https://pkg.go.dev/github.com/tmc/fuzztape)
+
 Typed and stateful testing over `go test -fuzz`.
 
 The fuzzing engine built into `go test` mutates and minimizes flat byte
