@@ -14,16 +14,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # The floor job. go.mod declares go 1.26, so this is the oldest
+  # toolchain a consumer may bring, and the only one that proves the
+  # generic-method file is genuinely excluded rather than merely
+  # unused. It does not run gofmt: a 1.26 gofmt cannot parse that file
+  # even though the build correctly skips it.
+  floor:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          # The module's language floor is go 1.27: the package uses
-          # generic methods, which no earlier toolchain parses — gofmt
-          # included, which is why the format check below needs it too.
+          go-version: '1.26.6'
+          cache-dependency-path: go.mod
+      - name: Build and test
+        run: |
+          go build ./...
+          go test ./...
+      - name: Vet
+        run: go vet ./...
+
+  # The current job. Compiles the generic-method spellings, owns the
+  # format gate, and runs the fuzz smoke test.
+  current:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
           go-version: '1.27.0'
           cache-dependency-path: go.mod
       - name: Build and test

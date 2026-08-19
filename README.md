@@ -67,8 +67,17 @@ which makes every case a goroutine-leak check as well.
 
 ## Requirements
 
-Go 1.27 or later. The package uses generic methods (`Tape.Draw`,
-`Tape.Pick`, `Tape.OneOf`, `Gen.Map`) and `testing/synctest`.
+Go 1.26 or later, for `testing/synctest`.
+
+Under Go 1.27 or later the package additionally provides method
+spellings of four of its functions — `Tape.Draw`, `Tape.Pick`,
+`Tape.OneOf`, and `Gen.Map` — for left-to-right composition. They are
+one-line delegations to the free functions, which remain the portable
+spelling; code written against the methods does not build under 1.26.
+
+Formatting the repository requires a 1.27 or later `gofmt`, which is
+the only toolchain that can parse the file those methods live in, tag
+or no tag.
 
 ## Provenance
 

@@ -35,12 +35,6 @@ func Map[A, B any](g Gen[A], f func(A) B) Gen[B] {
 	return func(t *Tape) B { return f(g(t)) }
 }
 
-// Map returns a generator that yields f applied to g's values. It is
-// the free function [Map] as a method.
-func (g Gen[A]) Map[B any](f func(A) B) Gen[B] {
-	return Map(g, f)
-}
-
 // Or returns a generator that defers to g or one of alts.
 // It is OneOf as a method, for left-to-right composition.
 func (g Gen[T]) Or(alts ...Gen[T]) Gen[T] {

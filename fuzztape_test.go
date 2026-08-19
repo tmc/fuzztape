@@ -118,32 +118,6 @@ func TestGen(t *testing.T) {
 	}
 }
 
-// TestGenericMethods checks the method spellings against the free
-// functions they delegate to.
-func TestGenericMethods(t *testing.T) {
-	tape := New(nil)
-	double := Const(21).Map(func(n int) int { return 2 * n })
-	if got := tape.Draw(double); got != 42 {
-		t.Errorf("Draw(Const(21).Map(double)) = %d, want 42", got)
-	}
-	if got := tape.Pick([]string{"a", "b"}); got != "a" {
-		t.Errorf("Pick = %q, want %q", got, "a")
-	}
-	if got := tape.OneOf(Const(1), Const(2)); got != 1 {
-		t.Errorf("OneOf = %d, want 1 (first generator on a zero tape)", got)
-	}
-}
-
-// TestGenericMethodPromotion checks that a generic method promotes
-// through embedding, which any wrapper embedding *Tape depends on.
-func TestGenericMethodPromotion(t *testing.T) {
-	type embeds struct{ *Tape }
-	e := embeds{New(nil)}
-	if got := e.Draw(Const(7)); got != 7 {
-		t.Errorf("promoted Draw = %d, want 7", got)
-	}
-}
-
 // counter is the canary system under test: a counter that the planted
 // invariant forbids from reaching 7.
 type counter struct{ n int }
