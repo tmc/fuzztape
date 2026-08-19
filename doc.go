@@ -68,5 +68,29 @@ A typical machine and its two entry points:
 Setting [Machine.Bubble] runs each case inside a [testing/synctest]
 bubble: time is virtual, and the bubble's exit check turns every case
 into a goroutine-leak check.
+
+# Subpackages
+
+Subpackage faults injects tape-driven I/O faults, so a shrunk input
+names the single fault that breaks an invariant. Subpackage splice
+builds seeds by crossing corpus inputs at the operation boundaries
+[Machine.Splits] recovers. Subpackage stats counts how often each op
+actually runs, turning a machine that has silently stopped exercising
+an operation into a visible gap.
+
+# Go version
+
+The module builds with Go 1.26 and later. Under Go 1.27 and later it
+additionally provides method spellings of four of its functions —
+[Tape.Draw], [Tape.Pick], [Tape.OneOf], and [Gen.Map] — for
+left-to-right composition. Those methods are compiled only by a 1.27
+or later toolchain, and this documentation is built by one, so it
+lists them unconditionally: code that must build under 1.26 has to use
+the free functions [Pick], [OneOf], and [Map] instead.
+
+# API stability
+
+This package is pre-v1 and its API is not yet stable. It may change
+without notice.
 */
 package fuzztape
