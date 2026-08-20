@@ -275,7 +275,7 @@ func TestMachineRunPasses(t *testing.T) {
 func TestMachineFuzzOpSelection(t *testing.T) {
 	// A zero tape of any length decodes to a prefix of "inc" ops (the
 	// first enabled op) and never trips the clean invariant.
-	clean.runTape(t, make([]byte, 64), true, nil)
+	clean.runTape(t, make([]byte, 64), true, nil, nil)
 }
 
 func TestMachineSplits(t *testing.T) {

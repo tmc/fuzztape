@@ -101,14 +101,33 @@ type Machine[S any] struct {
 	// blocked for the rest of the run, in a bubble nothing else can
 	// reach.
 	Bubble bool
+	// Stall bounds how long a run may complete no input before it is
+	// reported as wedged and the process aborted. Zero means 30
+	// seconds; a negative value disables the check.
+	//
+	// It applies only under Bubble and only to [Machine.Run], and
+	// covers the one stall a bubble cannot report itself: a goroutine
+	// blocked on something outside the bubble is not durably blocked,
+	// so the bubble neither quiesces nor trips the runtime's deadlock
+	// check, and the run hangs until go test times out. A goroutine
+	// blocked inside the bubble never reaches this, being caught the
+	// moment it happens. [Machine.Fuzz] is supervised by the fuzzing
+	// engine instead.
+	Stall time.Duration
 }
 
 // Fuzz registers the machine as the fuzz function of f. Corpus files,
 // -fuzztime budgets, minimization, and seeds via f.Add behave as for
 // any other fuzz target.
+//
+// Stall does not apply here. The fuzzing engine runs inputs in worker
+// processes and already supervises them: a worker that stops responding
+// is killed and its input recorded as a crasher. A watchdog in this
+// process would be watching the coordinator, which runs no inputs of
+// its own and would look stalled the moment it started orchestrating.
 func (m Machine[S]) Fuzz(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		m.runTape(t, data, true, nil)
+		m.runTape(t, data, true, nil, nil)
 	})
 }
 
@@ -123,7 +142,9 @@ func (m Machine[S]) Fuzz(f *testing.F) {
 // failure found by Run is saved as a seed, and that seed is then
 // checked by go test with no -fuzz flag, not only by the fuzz target.
 func (m Machine[S]) Run(t *testing.T, iters int) {
-	if !m.replaySeeds(t) {
+	w := m.startWatchdog()
+	defer w.stop()
+	if !m.replaySeeds(t, w) {
 		return
 	}
 	if iters <= 0 {
@@ -138,18 +159,18 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	for i := range iters {
 		data := make([]byte, 16+rng.Intn(496))
 		rng.Read(data)
-		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil) }) {
+		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil, w) }) {
 			continue
 		}
-		m.reportFailure(t, data)
+		m.reportFailure(t, data, w)
 		return
 	}
 }
 
 // reportFailure shrinks a failing input, logs the result, and saves it
 // as a seed for permanent replay.
-func (m Machine[S]) reportFailure(t *testing.T, data []byte) {
-	data = m.shrink(t, data)
+func (m Machine[S]) reportFailure(t *testing.T, data []byte, w *watchdog) {
+	data = m.shrink(t, data, w)
 	t.Logf("fuzztape: shrunk failing input to %d bytes: %x", len(data), data)
 	if m.Name == "" {
 		return
@@ -164,7 +185,7 @@ func (m Machine[S]) reportFailure(t *testing.T, data []byte) {
 // replaySeeds runs every seed input saved for the machine's Name and
 // reports whether all of them passed. It is a no-op when Name is unset
 // or the corpus directory does not exist.
-func (m Machine[S]) replaySeeds(t *testing.T) bool {
+func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 	if m.Name == "" {
 		return true
 	}
@@ -185,7 +206,7 @@ func (m Machine[S]) replaySeeds(t *testing.T) bool {
 			ok = false
 			continue
 		}
-		if !t.Run("seed/"+e.Name(), func(t *testing.T) { m.runTape(t, data, true, nil) }) {
+		if !t.Run("seed/"+e.Name(), func(t *testing.T) { m.runTape(t, data, true, nil, w) }) {
 			t.Logf("fuzztape: seed %s still fails; it is already minimal, so it is not reshrunk", path)
 			ok = false
 		}
@@ -208,7 +229,10 @@ func (m Machine[S]) replaySeeds(t *testing.T) bool {
 // stacks are worth printing only for the input Run failed on, not for
 // the shrink attempts that follow, which by then are reporting the
 // leaks of every attempt before them.
-func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]int) {
+func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]int, w *watchdog) {
+	// Registered first, so it runs last: the input has completed, for
+	// the watchdog's purposes, once everything else here has run.
+	defer w.tick()
 	var applied []string
 	defer func() {
 		if m.Bubble {
@@ -235,7 +259,7 @@ func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]in
 // reports whether it passed. It is what a saved corpus file needs to be
 // re-run by hand, and what a generated reproduction case calls.
 func (m Machine[S]) Replay(t *testing.T, data []byte) bool {
-	return t.Run("replay", func(t *testing.T) { m.runTape(t, data, true, nil) })
+	return t.Run("replay", func(t *testing.T) { m.runTape(t, data, true, nil, nil) })
 }
 
 // Trace replays data against a fresh system and returns the names of
@@ -278,7 +302,7 @@ func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]str
 // dumps.
 func (m Machine[S]) Splits(t *testing.T, data []byte) []int {
 	var splits []int
-	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits) })
+	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits, nil) })
 	return splits
 }
 
@@ -366,11 +390,11 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 // and zero bytes both decode to the simplest choice, byte-level edits
 // shrink the decoded op sequence and its values. Attempts run as
 // subtests of t (which is already failing).
-func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
+func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	attempts := 0
 	fails := func(d []byte) bool {
 		attempts++
-		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, nil) })
+		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, nil, w) })
 	}
 
 	// Truncation: halve, then trim single bytes.
@@ -395,7 +419,7 @@ func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
 	for stop := attempts + 80; attempts < stop; {
 		var splits []int
 		attempts++
-		t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, data, false, &splits) })
+		t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, data, false, &splits, w) })
 		deleted := false
 		for i := len(splits) - 2; i >= 0 && attempts < stop; i-- {
 			cut := slices.Concat(data[:splits[i]], data[splits[i+1]:])
