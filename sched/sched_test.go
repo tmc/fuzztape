@@ -1,0 +1,202 @@
+package sched_test
+
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/tmc/fuzztape"
+	"github.com/tmc/fuzztape/sched"
+)
+
+// opening is every account's starting balance.
+const opening = 100
+
+// account is the system under test: a balance withdrawn from by
+// concurrent goroutines, alongside a running total of what has been
+// taken out.
+type account struct {
+	sched     *sched.Scheduler
+	balance   int
+	withdrawn int
+	safe      bool
+}
+
+// Withdraw is check-then-act. It reads the balance, offers a scheduling
+// point, then writes back a value derived from the stale read — the
+// lost update every concurrent counter gets wrong at least once. With
+// safe set it re-reads after the yield, which closes the window.
+//
+// Note what the bug does and does not do. Two withdrawals that
+// interleave inside the window both succeed, but the second overwrites
+// the first, so the balance ends too high rather than negative: the
+// money leaves the ledger without leaving the account. Only comparing
+// the balance against the total withdrawn catches it, which is why the
+// invariant is stated as conservation and not as a bound.
+func (a *account) Withdraw(n int) {
+	have := a.balance
+	if have < n {
+		return
+	}
+	a.sched.Yield()
+	if a.safe {
+		if a.balance < n {
+			return
+		}
+		a.balance -= n
+		a.withdrawn += n
+		return
+	}
+	a.balance = have - n
+	a.withdrawn += n
+}
+
+func machine(safe bool) fuzztape.Machine[*account] {
+	return fuzztape.Machine[*account]{
+		Bubble: true,
+		Init: func(t *fuzztape.T) *account {
+			a := &account{balance: opening, safe: safe}
+			a.sched = sched.New(t)
+			return a
+		},
+		Ops: []fuzztape.Op[*account]{
+			{Name: "withdraw", Weight: 2, Apply: func(t *fuzztape.T, a *account) {
+				amount := fuzztape.IntRange(1, 100)(t.Tape)
+				a.sched.Go("withdraw", func() { a.Withdraw(amount) })
+			}},
+			sched.StepOp("step", func(a *account) *sched.Scheduler { return a.sched }),
+			sched.SettleOp("settle", func(a *account) *sched.Scheduler { return a.sched }),
+		},
+		Check: func(t *fuzztape.T, a *account) {
+			if a.balance != opening-a.withdrawn {
+				t.Fatalf("balance %d, but %d of %d was withdrawn (lost update) after schedule [%s]",
+					a.balance, a.withdrawn, opening, a.sched)
+			}
+		},
+	}
+}
+
+// TestSafeImplementationPasses is the negative control. The version
+// that re-reads after the yield must survive every schedule, or the
+// canary below proves only that the scheduler can break correct code.
+func TestSafeImplementationPasses(t *testing.T) {
+	machine(true).Run(t, 300)
+}
+
+// TestCanary proves the scheduler reaches an interleaving no
+// sequential machine can: two withdrawals both past the balance check
+// before either writes.
+func TestCanary(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		machine(false).Run(t, 3000)
+		return
+	}
+	out, err := child(t, "^TestCanary$")
+	if err == nil {
+		t.Fatalf("planted race not found; output:\n%s", out)
+	}
+	for _, want := range []string{"lost update", "op sequence", "shrunk failing input"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q; output:\n%s", want, out)
+		}
+	}
+}
+
+// TestStepLeavesNothingRunning is the regression test for the race the
+// trailing wait in Step prevents. Every goroutine the scheduler owns is
+// either parked or finished; none is mid-execution. If Step returned
+// before the goroutine it released reached its next scheduling point,
+// that goroutine would be neither, and the count would come up short —
+// which is precisely the window in which the op goroutine would run the
+// invariant against a system another goroutine was still mutating.
+func TestStepLeavesNothingRunning(t *testing.T) {
+	type fleet struct {
+		sched    *sched.Scheduler
+		spawned  int
+		finished atomic.Int32
+	}
+	m := fuzztape.Machine[*fleet]{
+		Bubble: true,
+		Init: func(t *fuzztape.T) *fleet {
+			f := new(fleet)
+			f.sched = sched.New(t)
+			return f
+		},
+		Ops: []fuzztape.Op[*fleet]{
+			{Name: "spawn", Weight: 2, Apply: func(t *fuzztape.T, f *fleet) {
+				f.spawned++
+				f.sched.Go("worker", func() {
+					f.sched.Yield()
+					f.sched.Yield()
+					f.finished.Add(1)
+				})
+			}},
+			sched.StepOp("step", func(f *fleet) *sched.Scheduler { return f.sched }),
+		},
+		Check: func(t *fuzztape.T, f *fleet) {
+			if got := f.sched.Parked() + int(f.finished.Load()); got != f.spawned {
+				t.Fatalf("%d parked + %d finished = %d, want %d spawned: a goroutine is still running",
+					f.sched.Parked(), f.finished.Load(), got, f.spawned)
+			}
+		},
+	}
+	m.Run(t, 200)
+}
+
+// TestScheduleIsDeterministic is the property the whole package exists
+// for: the same input must produce the same schedule and the same
+// final state, every time. Without it a failing corpus file would not
+// reproduce and shrinking would be meaningless.
+func TestScheduleIsDeterministic(t *testing.T) {
+	input := []byte{9, 3, 17, 42, 5, 200, 1, 8, 77, 4, 12, 250, 6, 31, 2, 90}
+	var schedules []string
+	var balances []int
+	for range 8 {
+		schedule, balance := replay(t, input)
+		schedules = append(schedules, schedule)
+		balances = append(balances, balance)
+	}
+	for i := range schedules {
+		if schedules[i] != schedules[0] {
+			t.Fatalf("run %d scheduled [%s], first run scheduled [%s]", i, schedules[i], schedules[0])
+		}
+		if balances[i] != balances[0] {
+			t.Fatalf("run %d ended at %d, first run ended at %d", i, balances[i], balances[0])
+		}
+	}
+	if schedules[0] == "" {
+		t.Fatal("no goroutine was ever scheduled; the test proves nothing")
+	}
+}
+
+// replay runs input once against a fresh account and returns the
+// schedule and balance it ended with.
+func replay(t *testing.T, input []byte) (schedule string, balance int) {
+	t.Helper()
+	m := machine(false)
+	m.Check = nil // the lost update is expected here, not a failure
+	init := m.Init
+	m.Init = func(ft *fuzztape.T) *account {
+		// Registered before Init runs, so it is the last cleanup to
+		// execute: after the scheduler has drained, when the schedule
+		// and the balance are final.
+		var a *account
+		ft.Cleanup(func() { schedule, balance = a.sched.String(), a.balance })
+		a = init(ft)
+		return a
+	}
+	// Splits replays one input against a fresh system, which is the
+	// exported way to run exactly one input.
+	m.Splits(t, input)
+	return schedule, balance
+}
+
+func child(t *testing.T, run string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run", run, "-test.v")
+	cmd.Env = append(os.Environ(), "FUZZTAPE_CANARY=1")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
