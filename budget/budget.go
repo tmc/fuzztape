@@ -140,6 +140,14 @@ func (l *Ledger) imbalance() string {
 // rise and fall with collection, so the same input could pass or fail
 // depending on when the collector ran. A cumulative counter cannot.
 //
+// Determinism holds across a run and across toolchains, but not across
+// build configurations. The counter measures the binary that is
+// running, and an instrumented build allocates more: the race
+// detector's shadow state is heap like anything else, and the same work
+// measured about a fifth higher under -race than without it. So a
+// ceiling tuned on an ordinary build can trip under -race. Leave
+// headroom for it rather than keeping a second ceiling in step.
+//
 // Reading it stops the world, so this costs roughly a microsecond per
 // input — negligible for [fuzztape.Machine.Run] and for targeted
 // fuzzing, but real at full fuzzing throughput. Enable it while hunting
