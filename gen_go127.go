@@ -9,6 +9,10 @@ package fuzztape
 // parse them. Code that must build under 1.26 has to use the free
 // functions.
 //
+// The methods are declared on *Tape rather than on *T so that they
+// promote through the embedded *Tape to every op's *T as well; that
+// promotion is verified by TestGenericMethodPromotion.
+//
 // The build tag is what keeps a 1.26 build working, but it does not
 // help gofmt, which parses a file whether or not its tag selects it.
 // Formatting this repo therefore requires a 1.27 or later gofmt; CI
@@ -19,18 +23,18 @@ package fuzztape
 
 // Draw returns a value of g decoded from the tape. It is g(t) as a
 // method, for left-to-right composition.
-func (t *Tape) Draw[T any](g Gen[T]) T {
+func (t *Tape) Draw[V any](g Gen[V]) V {
 	return g(t)
 }
 
 // Pick returns one of opts, chosen by the tape. It is the free
 // function Pick as a method.
-func (t *Tape) Pick[T any](opts []T) T {
+func (t *Tape) Pick[V any](opts []V) V {
 	return Pick(t, opts)
 }
 
 // OneOf returns a value drawn from one of gens, chosen by the tape.
-func (t *Tape) OneOf[T any](gens ...Gen[T]) T {
+func (t *Tape) OneOf[V any](gens ...Gen[V]) V {
 	return OneOf(gens...)(t)
 }
 

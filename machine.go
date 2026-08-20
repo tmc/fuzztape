@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -26,33 +27,62 @@ type Op[S any] struct {
 	// When reports whether the op is currently applicable;
 	// nil means always. Ops with a false When are not selected.
 	When func(s S) bool
-	// Apply performs the op, drawing parameters from the tape.
-	// A non-nil error rejects the op — the sequence continues — and
-	// must not be used for failures; fail with t.Fatalf in Check or
-	// via the *testing.T captured by Init.
-	Apply func(s S, t *Tape) error
+	// Apply performs the op, drawing parameters from t. An op that
+	// turns out not to apply once it has drawn calls [T.Reject]; an op
+	// that finds a violation calls [T.Fatalf] or [T.Errorf].
+	Apply func(t *T, s S)
+}
+
+// NewOp returns an op that draws one parameter with g and passes it to
+// apply. The parameter is drawn once, before apply runs, which is what
+// lets two implementations of the same operation — a system under test
+// and a reference model — be driven with identical input.
+func NewOp[S, A any](name string, g Gen[A], apply func(t *T, s S, v A)) Op[S] {
+	return Op[S]{
+		Name:  name,
+		Apply: func(t *T, s S) { apply(t, s, g(t.Tape)) },
+	}
+}
+
+// OpOver returns an op that applies to one element of candidates,
+// chosen by the tape, and is enabled only while that set is non-empty.
+//
+// It replaces the pairing of a When that tests a filtered set against a
+// Apply that rebuilds it, which is otherwise written out at every op
+// that acts on "one of the currently eligible" things.
+func OpOver[S, E any](name string, candidates func(s S) []E, apply func(t *T, s S, e E)) Op[S] {
+	return Op[S]{
+		Name:  name,
+		When:  func(s S) bool { return len(candidates(s)) > 0 },
+		Apply: func(t *T, s S) { apply(t, s, Pick(t.Tape, candidates(s))) },
+	}
 }
 
 // A Machine describes a stateful property test: a system under test, a
 // set of operations, and an invariant. Each input decodes to a bounded
 // operation sequence; the invariant is checked after every applied op.
 type Machine[S any] struct {
-	// Init returns a fresh system under test.
-	Init func(t *testing.T) S
+	// Init returns a fresh system under test. It may draw from the
+	// tape to vary the starting state; those draws precede the first
+	// op's, and [Machine.Splits] accounts for them.
+	Init func(t *T) S
 	// Ops is the operation set. It must be non-empty, and its order
 	// is part of the corpus encoding: reordering ops changes how
 	// previously saved inputs decode.
 	Ops []Op[S]
-	// Check asserts the invariant, failing with t.Fatalf.
-	Check func(t *testing.T, s S)
+	// Check asserts the invariant, failing with t.Fatalf. It must not
+	// draw from the tape: its draws would be indistinguishable from an
+	// op's and would shift how the rest of the input decodes.
+	Check func(t *T, s S)
 	// MaxOps bounds the ops decoded per input; 0 means 64. It is only an
 	// upper bound: a sequence also ends when the input runs out, which
 	// for short inputs happens well before MaxOps.
 	MaxOps int
 	// Name, if set, is the fuzz target name (e.g. "FuzzStreamMachine")
-	// under which Run saves shrunk failing inputs to testdata/fuzz/,
-	// so a failure found by Run becomes a seed input replayed by both
-	// Run and the fuzz target.
+	// whose seed corpus under testdata/fuzz/ [Machine.Run] replays
+	// before its random cases and saves shrunk failing inputs to, so a
+	// failure found by either mode becomes a seed input replayed by
+	// both.
 	Name string
 	// Bubble runs each input's op sequence inside a testing/synctest
 	// bubble: time is virtual, and the bubble's exit check reports any
@@ -62,9 +92,9 @@ type Machine[S any] struct {
 	//
 	// Init runs inside the bubble, so a goroutine it starts must be
 	// stopped inside the bubble too — by an op, or by a cleanup Init
-	// registers on the *testing.T it is passed, which the bubble runs
-	// before its exit check. A goroutine stopped on the outer test's
-	// cleanup is still blocked at exit and fails every case.
+	// registers with [T.Cleanup], which the bubble runs before its exit
+	// check. A goroutine stopped on the outer test's cleanup is still
+	// blocked at exit and fails every case.
 	//
 	// A leak is reported with the stacks of the goroutines left blocked,
 	// and shrinks like any other failure. The goroutines themselves stay
@@ -82,12 +112,20 @@ func (m Machine[S]) Fuzz(f *testing.F) {
 	})
 }
 
-// Run checks the machine against iters pseudo-random inputs inside an
-// ordinary test; iters <= 0 means 100. The seed is printed and can be
-// pinned with -fuzztape.seed. On failure Run shrinks the failing input,
-// logs the minimal op sequence, and (if Name is set) saves the input to
+// Run checks the machine inside an ordinary test: first every seed
+// input saved under testdata/fuzz for Name, then iters pseudo-random
+// inputs; iters <= 0 means 100. The seed is printed and can be pinned
+// with -fuzztape.seed. On failure Run shrinks the failing input, logs
+// the minimal op sequence, and (if Name is set) saves the input to
 // testdata/fuzz/ for permanent replay.
+//
+// Replaying the corpus here is what keeps the two modes symmetric: a
+// failure found by Run is saved as a seed, and that seed is then
+// checked by go test with no -fuzz flag, not only by the fuzz target.
 func (m Machine[S]) Run(t *testing.T, iters int) {
+	if !m.replaySeeds(t) {
+		return
+	}
 	if iters <= 0 {
 		iters = 100
 	}
@@ -103,17 +141,56 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil) }) {
 			continue
 		}
-		data = m.shrink(t, data)
-		t.Logf("fuzztape: shrunk failing input to %d bytes: %x", len(data), data)
-		if m.Name != "" {
-			if path, err := writeCorpusFile(m.Name, data); err != nil {
-				t.Logf("fuzztape: save corpus file: %v", err)
-			} else {
-				t.Logf("fuzztape: saved failing input to %s", path)
-			}
-		}
+		m.reportFailure(t, data)
 		return
 	}
+}
+
+// reportFailure shrinks a failing input, logs the result, and saves it
+// as a seed for permanent replay.
+func (m Machine[S]) reportFailure(t *testing.T, data []byte) {
+	data = m.shrink(t, data)
+	t.Logf("fuzztape: shrunk failing input to %d bytes: %x", len(data), data)
+	if m.Name == "" {
+		return
+	}
+	if path, err := writeCorpusFile(m.Name, data); err != nil {
+		t.Logf("fuzztape: save corpus file: %v", err)
+	} else {
+		t.Logf("fuzztape: saved failing input to %s", path)
+	}
+}
+
+// replaySeeds runs every seed input saved for the machine's Name and
+// reports whether all of them passed. It is a no-op when Name is unset
+// or the corpus directory does not exist.
+func (m Machine[S]) replaySeeds(t *testing.T) bool {
+	if m.Name == "" {
+		return true
+	}
+	dir := filepath.Join("testdata", "fuzz", m.Name)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	ok := true
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := readCorpusFile(path)
+		if err != nil {
+			t.Errorf("fuzztape: %v", err)
+			ok = false
+			continue
+		}
+		if !t.Run("seed/"+e.Name(), func(t *testing.T) { m.runTape(t, data, true, nil) }) {
+			t.Logf("fuzztape: seed %s still fails; it is already minimal, so it is not reshrunk", path)
+			ok = false
+		}
+	}
+	return ok
 }
 
 // runTape runs one input, inside a synctest bubble if Bubble is set,
@@ -152,6 +229,39 @@ func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]in
 		return
 	}
 	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied, splits) })
+}
+
+// Replay runs one input against a fresh system, as a subtest of t, and
+// reports whether it passed. It is what a saved corpus file needs to be
+// re-run by hand, and what a generated reproduction case calls.
+func (m Machine[S]) Replay(t *testing.T, data []byte) bool {
+	return t.Run("replay", func(t *testing.T) { m.runTape(t, data, true, nil) })
+}
+
+// Trace replays data against a fresh system and returns the names of
+// the ops it applied, in order, with rejected ops marked. It is the
+// decoded meaning of an input: the same thing a failing case logs,
+// available without failing.
+//
+// The replay applies the sequence for real, as [Machine.Splits] does,
+// and reports on a subtest of t if the input fails the machine.
+func (m Machine[S]) Trace(t *testing.T, data []byte) []string {
+	var applied []string
+	t.Run("trace", func(t *testing.T) {
+		defer func() { recover() }()
+		m.runOpsMaybeBubbled(t, data, &applied)
+	})
+	return applied
+}
+
+// runOpsMaybeBubbled runs one input for its op names alone, without the
+// failure reporting runTape adds.
+func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]string) {
+	if !m.Bubble {
+		m.runOps(t, data, applied, nil)
+		return
+	}
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, applied, nil) })
 }
 
 // Splits reports the tape offsets at which the ops decoded from data
@@ -193,13 +303,18 @@ func bubbleStacks() string {
 // can report the sequence even when the failure surfaces after runOps
 // has returned. If splits is non-nil it records each op's starting tape
 // offset, plus one final offset past the last byte consumed.
-func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string, splits *[]int) {
+func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits *[]int) {
 	if len(m.Ops) == 0 {
-		t.Fatal("fuzztape: Machine has no Ops")
+		tb.Fatal("fuzztape: Machine has no Ops")
 	}
-	tape := New(data)
+	t := &T{Tape: New(data), tb: tb}
+	// Cleanups run before this function returns, so a failure they
+	// report still lands inside the op-sequence logging in runTape and
+	// is shrunk like any other. They are registered first, and so run
+	// last, after the final tape offset is recorded.
+	defer t.runCleanups()
 	if splits != nil {
-		defer func() { *splits = append(*splits, tape.Pos()) }()
+		defer func() { *splits = append(*splits, t.Pos()) }()
 	}
 	s := m.Init(t)
 	maxOps := m.MaxOps
@@ -207,7 +322,7 @@ func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string, splits 
 		maxOps = 64
 	}
 	for range maxOps {
-		if tape.Done() {
+		if t.Done() {
 			return
 		}
 		enabled := make([]*Op[S], 0, len(m.Ops))
@@ -223,9 +338,9 @@ func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string, splits 
 			return
 		}
 		if splits != nil {
-			*splits = append(*splits, tape.Pos())
+			*splits = append(*splits, t.Pos())
 		}
-		w := tape.IntN(total)
+		w := t.IntN(total)
 		var op *Op[S]
 		for _, o := range enabled {
 			w -= max(o.Weight, 1)
@@ -234,8 +349,8 @@ func (m Machine[S]) runOps(t *testing.T, data []byte, applied *[]string, splits 
 				break
 			}
 		}
-		if err := op.Apply(s, tape); err != nil {
-			*applied = append(*applied, op.Name+" (rejected: "+err.Error()+")")
+		if reason, ok := apply(t, op, s); !ok {
+			*applied = append(*applied, op.Name+" (rejected: "+reason+")")
 			continue
 		}
 		*applied = append(*applied, op.Name)
@@ -319,6 +434,9 @@ func (m Machine[S]) shrink(t *testing.T, data []byte) []byte {
 	return data
 }
 
+// corpusHeader is the first line of every go test fuzz corpus file.
+const corpusHeader = "go test fuzz v1"
+
 // writeCorpusFile saves data as a seed corpus file for the named fuzz
 // target, in the format go test replays from testdata/fuzz.
 func writeCorpusFile(target string, data []byte) (string, error) {
@@ -326,10 +444,38 @@ func writeCorpusFile(target string, data []byte) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	content := fmt.Sprintf("go test fuzz v1\n[]byte(%q)\n", data)
+	content := fmt.Sprintf("%s\n[]byte(%q)\n", corpusHeader, data)
 	path := filepath.Join(dir, fmt.Sprintf("fuzztape-%x", sha256.Sum256(data))[:24])
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// readCorpusFile reads a seed corpus file holding the single []byte
+// value a Machine target takes. It reports an error for the other
+// shapes go test's format allows — a different version, or a record of
+// several typed values — rather than guessing at them.
+func readCorpusFile(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) != corpusHeader {
+		return nil, fmt.Errorf("%s: not a %s corpus file holding one []byte", path, corpusHeader)
+	}
+	v, ok := strings.CutPrefix(strings.TrimSpace(lines[1]), "[]byte(")
+	if !ok {
+		return nil, fmt.Errorf("%s: corpus value is not a []byte", path)
+	}
+	v, ok = strings.CutSuffix(v, ")")
+	if !ok {
+		return nil, fmt.Errorf("%s: malformed corpus value", path)
+	}
+	s, err := strconv.Unquote(v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", path, err)
+	}
+	return []byte(s), nil
 }

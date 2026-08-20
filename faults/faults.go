@@ -87,9 +87,8 @@ func FailReadOp[S any](name string, get func(S) *ReadWriter, errs ...error) fuzz
 	mustErrs(errs)
 	return fuzztape.Op[S]{
 		Name: name,
-		Apply: func(s S, t *fuzztape.Tape) error {
-			get(s).FailRead(fuzztape.Pick(t, errs))
-			return nil
+		Apply: func(t *fuzztape.T, s S) {
+			get(s).FailRead(fuzztape.Pick(t.Tape, errs))
 		},
 	}
 }
@@ -100,9 +99,8 @@ func FailWriteOp[S any](name string, get func(S) *ReadWriter, errs ...error) fuz
 	mustErrs(errs)
 	return fuzztape.Op[S]{
 		Name: name,
-		Apply: func(s S, t *fuzztape.Tape) error {
-			get(s).FailWrite(fuzztape.Pick(t, errs))
-			return nil
+		Apply: func(t *fuzztape.T, s S) {
+			get(s).FailWrite(fuzztape.Pick(t.Tape, errs))
 		},
 	}
 }
@@ -112,9 +110,8 @@ func FailWriteOp[S any](name string, get func(S) *ReadWriter, errs ...error) fuz
 func DropOp[S any](name string, get func(S) *ReadWriter, max int) fuzztape.Op[S] {
 	return fuzztape.Op[S]{
 		Name: name,
-		Apply: func(s S, t *fuzztape.Tape) error {
+		Apply: func(t *fuzztape.T, s S) {
 			get(s).Drop(1 + t.IntN(max))
-			return nil
 		},
 	}
 }
@@ -123,11 +120,11 @@ func DropOp[S any](name string, get func(S) *ReadWriter, max int) fuzztape.Op[S]
 // paths. It is intended for machines with Bubble set, where the sleep
 // advances virtual time and costs nothing.
 func SleepOp[S any](name string, max time.Duration) fuzztape.Op[S] {
+	nap := fuzztape.Duration(0, max)
 	return fuzztape.Op[S]{
 		Name: name,
-		Apply: func(s S, t *fuzztape.Tape) error {
-			time.Sleep(time.Duration(t.IntN(int(max) + 1)))
-			return nil
+		Apply: func(t *fuzztape.T, s S) {
+			time.Sleep(nap(t.Tape))
 		},
 	}
 }

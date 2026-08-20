@@ -26,6 +26,12 @@ func (t *Tape) Pos() int {
 	return t.pos
 }
 
+// Len returns the length of the input, which bounds the work a
+// correctly behaved system under test should do for it.
+func (t *Tape) Len() int {
+	return len(t.data)
+}
+
 // Byte returns the next byte, or 0 when the input is exhausted.
 func (t *Tape) Byte() byte {
 	if t.pos >= len(t.data) {
@@ -93,6 +99,9 @@ func (t *Tape) Bytes(max int) []byte {
 
 // Pick returns one of opts, chosen by the tape. It panics if opts is
 // empty. A zero tape picks opts[0].
-func Pick[T any](t *Tape, opts []T) T {
+//
+// The type parameter is named V rather than the conventional T because
+// this package has a type named [T].
+func Pick[V any](t *Tape, opts []V) V {
 	return opts[t.IntN(len(opts))]
 }

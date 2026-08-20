@@ -81,26 +81,24 @@ func TestOps(t *testing.T) {
 	if op.Name != "fail-read" {
 		t.Errorf("Name = %q", op.Name)
 	}
-	if err := op.Apply(s, fuzztape.New(nil)); err != nil {
-		t.Fatalf("Apply rejected: %v", err)
-	}
+	op.Apply(fuzztape.NewT(t, nil), s)
 	if _, err := s.rw.Read(nil); !errors.Is(err, errInjected) {
 		t.Fatalf("armed err = %v, want first of errs on zero tape", err)
 	}
 
 	// Selector 2 forces IntN's n-1 boundary: the last error.
-	op.Apply(s, fuzztape.New([]byte{2}))
+	op.Apply(fuzztape.NewT(t, []byte{2}), s)
 	if _, err := s.rw.Read(nil); !errors.Is(err, other) {
 		t.Fatalf("armed err = %v, want last of errs", err)
 	}
 
-	faults.FailWriteOp("fail-write", get, errInjected).Apply(s, fuzztape.New(nil))
+	faults.FailWriteOp("fail-write", get, errInjected).Apply(fuzztape.NewT(t, nil), s)
 	if _, err := s.rw.Write(nil); !errors.Is(err, errInjected) {
 		t.Fatalf("write err = %v", err)
 	}
 
 	// DropOp arms 1 to max drops; selector 2 forces max.
-	faults.DropOp("drop", get, 3).Apply(s, fuzztape.New([]byte{2}))
+	faults.DropOp("drop", get, 3).Apply(fuzztape.NewT(t, []byte{2}), s)
 	for range 3 {
 		s.rw.Write([]byte("z"))
 	}
@@ -124,7 +122,7 @@ func TestFailReadOpNoErrsPanics(t *testing.T) {
 func TestSleepOpBubble(t *testing.T) {
 	m := fuzztape.Machine[*sut]{
 		Bubble: true,
-		Init:   func(t *testing.T) *sut { return &sut{rw: newRW()} },
+		Init:   func(t *fuzztape.T) *sut { return &sut{rw: newRW()} },
 		Ops: []fuzztape.Op[*sut]{
 			faults.SleepOp[*sut]("sleep", 3600e9),
 		},
