@@ -29,6 +29,9 @@
 package sched
 
 import (
+	"context"
+	"fmt"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +44,10 @@ import (
 // forever is reported rather than hanging the run.
 const maxSteps = 10000
 
+// LabelKey is the [runtime/pprof] goroutine label under which
+// [Scheduler.Go] records a goroutine's name and spawn order.
+const LabelKey = "fuzztape.sched"
+
 // A Scheduler runs registered goroutines one at a time, in an order
 // drawn from the tape. Use [New] to make one; the zero value is not
 // usable.
@@ -50,6 +57,7 @@ type Scheduler struct {
 	mu      sync.Mutex
 	parked  []parked
 	pending int // started by Go, not yet at its first park
+	spawned int // total started by Go, used to number labels
 	order   []string
 }
 
@@ -76,11 +84,25 @@ func New(t *fuzztape.T) *Scheduler {
 
 // Go starts f as a scheduled goroutine. It begins parked, so the tape
 // chooses when it first runs, not only how it interleaves afterward.
+//
+// The goroutine carries a [runtime/pprof] label, [LabelKey], holding
+// name and the order in which it was started — "withdraw#3" for the
+// third. Two goroutines started under the same name are otherwise
+// indistinguishable in a crash, and which one panicked is usually the
+// first thing worth knowing.
+//
+// The runtime prints those labels in panic tracebacks. It does so by
+// default when the main module declares go1.27 or later, and on request
+// otherwise: GODEBUG=tracebacklabels=1 works on every toolchain this
+// module supports, though go1.26 and go1.27 spell the line differently.
 func (s *Scheduler) Go(name string, f func()) {
 	s.mu.Lock()
 	s.pending++
+	s.spawned++
+	label := fmt.Sprintf("%s#%d", name, s.spawned)
 	s.mu.Unlock()
 	go func() {
+		pprof.SetGoroutineLabels(pprof.WithLabels(context.Background(), pprof.Labels(LabelKey, label)))
 		s.park(name, true)
 		f()
 	}()

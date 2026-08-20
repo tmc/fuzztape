@@ -145,6 +145,46 @@ func TestStepLeavesNothingRunning(t *testing.T) {
 	m.Run(t, 200)
 }
 
+// TestPanicNamesTheGoroutine covers the label [Scheduler.Go] attaches.
+// A panic in a scheduled goroutine must say which one it was: the
+// traceback otherwise shows an anonymous function inside the system
+// under test, and with several goroutines under one name there is
+// nothing to tell them apart.
+//
+// The child sets GODEBUG=tracebacklabels=1 rather than relying on the
+// default, so the test holds on the floor toolchain too. go1.26 and
+// go1.27 format the line differently, so it asserts on the key and the
+// value and not on the punctuation around them.
+func TestPanicNamesTheGoroutine(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		m := fuzztape.Machine[*sched.Scheduler]{
+			Bubble: true,
+			Init:   func(t *fuzztape.T) *sched.Scheduler { return sched.New(t) },
+			Ops: []fuzztape.Op[*sched.Scheduler]{
+				{Name: "spawn", Apply: func(t *fuzztape.T, s *sched.Scheduler) {
+					s.Go("exploder", func() { panic("boom") })
+				}},
+			},
+		}
+		// The scheduler drains at the end of the sequence, so a spawned
+		// goroutine is always released and always panics.
+		m.Run(t, 50)
+		return
+	}
+	out, err := child(t, "^TestPanicNamesTheGoroutine$", "GODEBUG=tracebacklabels=1")
+	if err == nil {
+		t.Fatalf("the panicking goroutine did not crash the child; output:\n%s", out)
+	}
+	// Not "exploder#1": a sequence spawns several goroutines before the
+	// drain releases any, and the one that panics is whichever the tape
+	// released first, which is the whole point of the ordinal.
+	for _, want := range []string{sched.LabelKey, "exploder#"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("traceback missing %q; output:\n%s", want, out)
+		}
+	}
+}
+
 // TestScheduleIsDeterministic is the property the whole package exists
 // for: the same input must produce the same schedule and the same
 // final state, every time. Without it a failing corpus file would not
@@ -193,10 +233,11 @@ func replay(t *testing.T, input []byte) (schedule string, balance int) {
 	return schedule, balance
 }
 
-func child(t *testing.T, run string) (string, error) {
+func child(t *testing.T, run string, env ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run", run, "-test.v")
 	cmd.Env = append(os.Environ(), "FUZZTAPE_CANARY=1")
+	cmd.Env = append(cmd.Env, env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
