@@ -59,5 +59,10 @@ jobs:
           fi
       - name: Vet
         run: go vet ./...
+      - name: Race
+        run: go test -race ./...
+      # Every fuzz target, each with its own budget. go test -fuzz takes
+      # one target in one package per invocation, so this is a loop, and
+      # cmd/fuzztape is that loop.
       - name: Fuzz smoke test
-        run: go test -run '^$' -fuzz FuzzMachineCanaryClean -fuzztime 30s .
+        run: go run ./cmd/fuzztape run -time 20s

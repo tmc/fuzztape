@@ -30,19 +30,17 @@ bounded sequence of operations applied to a fresh system under test,
 with an invariant checked after every step.
 
 	var m = fuzztape.Machine[*Stack]{
-		Init: func(t *testing.T) *Stack { return new(Stack) },
+		Init: func(t *fuzztape.T) *Stack { return new(Stack) },
 		Ops: []fuzztape.Op[*Stack]{
-			{Name: "push", Apply: func(s *Stack, t *fuzztape.Tape) error {
+			{Name: "push", Apply: func(t *fuzztape.T, s *Stack) {
 				s.Push(t.Byte())
-				return nil
 			}},
 			{Name: "pop", When: func(s *Stack) bool { return s.Len() > 0 },
-				Apply: func(s *Stack, t *fuzztape.Tape) error {
+				Apply: func(t *fuzztape.T, s *Stack) {
 					s.Pop()
-					return nil
 				}},
 		},
-		Check: func(t *testing.T, s *Stack) {
+		Check: func(t *fuzztape.T, s *Stack) {
 			if s.Len() < 0 {
 				t.Fatalf("negative length %d", s.Len())
 			}
@@ -54,18 +52,55 @@ with an invariant checked after every step.
 	func TestStack(t *testing.T) { m.Run(t, 500) }
 
 Both entry points share one corpus: a failure found by `Run` is shrunk
-and saved as a seed input that both modes replay. Setting
+and saved as a seed input, and `Run` replays the saved corpus before its
+random cases, so a bug found either way is checked by both. Setting
 `Machine.Bubble` runs each case inside a `testing/synctest` bubble,
 which makes every case a goroutine-leak check as well.
 
+Ops receive a `*fuzztape.T`: the tape they draw from and the failure
+reporting of the test running them. Report a violation with `t.Fatalf`,
+abandon an op that turns out not to apply with `t.Reject`, and assert
+what should hold once the sequence has settled from `t.Cleanup`.
+
 ## Subpackages
 
+Each addresses one way a stateful test can pass while testing nothing.
+
+- `budget` — an allocation ceiling tied to input size, and a ledger
+  requiring every acquire to be matched by a release. Catches the
+  decoder that allocates a gigabyte without panicking, and the resource
+  leak that only wedges thousands of operations later.
+- `corpus` — seed loading, and an audit naming the saved inputs that no
+  longer decode to a distinct op sequence.
 - `faults` — tape-driven fault injection: one-shot read and write
   errors, dropped writes, and sleeps that advance virtual time.
+- `linear` — linearizability checking for overlapping operations, where
+  no single answer is the right one and only the existence of *some*
+  valid order settles correctness.
+- `model` — comparison against a reference implementation, or against a
+  second real one. Catches the wrong answer that leaves a plausible
+  state, which no invariant can see.
+- `sched` — goroutine interleaving as a tape decision, so a race
+  reproduces exactly from its corpus file and shrinks to the shortest
+  schedule that triggers it.
 - `splice` — new seeds built by crossing corpus inputs at operation
   boundaries, which the byte-level mutator cannot find on its own.
 - `stats` — per-op applied and rejected counts, so a machine that has
   silently stopped exercising an operation says so.
+- `trace` — a failing input turned into a test you can paste.
+
+## Command
+
+`go test -fuzz` fuzzes exactly one target, in one package, per
+invocation; `go test -fuzz ./...` does not report that as an error, it
+silently fuzzes one arbitrary target forever. The `fuzztape` command is
+the loop that fixes it.
+
+	go install github.com/tmc/fuzztape/cmd/fuzztape@latest
+
+	fuzztape list             # every target in the module
+	fuzztape run -time 5m     # each one, in turn, with its own budget
+	fuzztape matrix           # JSON for a GitHub Actions matrix
 
 ## Requirements
 
@@ -86,9 +121,15 @@ or no tag.
 Fuzztape was developed inside [go-iroh](https://github.com/tmc/go-iroh)
 as `internal/fuzztape` and extracted here with its history. Its first
 consumers were that project's QUIC stream flow-control, socket path
-watcher, and content-store machines.
+watcher, and content-store machines. The subpackages are shaped by the
+bugs that project actually hit: a stream-credit leak invisible until the
+pool ran dry, a decoder that allocated gigabytes on an 11-byte frame, a
+data-loss bug found by differential fuzzing against another
+implementation.
 
 ## API stability
 
 The API is not yet stable. It may change without notice before a v1
-tag.
+tag. v0.2.0 changed `Op.Apply`, `Machine.Init`, and `Machine.Check` to
+take a `*fuzztape.T`, and `Apply` no longer returns an error — use
+`t.Reject`.
