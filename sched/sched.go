@@ -179,6 +179,13 @@ func (s *Scheduler) Step() bool {
 // A goroutine that parks again every time it is released never lets
 // Settle finish; rather than hang, Settle gives up after a large number
 // of steps and fails the test.
+//
+// The drain it runs from [New]'s cleanup is deterministic even though
+// its choices come from the tape, which by then is usually exhausted: a
+// spent tape decodes every IntN to 0, so the remaining goroutines are
+// released in park order. Nothing depends on that, but it is worth
+// knowing that the tail of a sequence is not making random choices with
+// bytes that were never in the input.
 func (s *Scheduler) Settle() {
 	for n := 0; ; n++ {
 		if n >= maxSteps {

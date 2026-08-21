@@ -148,6 +148,12 @@ func (l *Ledger) imbalance() string {
 // ceiling tuned on an ordinary build can trip under -race. Leave
 // headroom for it rather than keeping a second ceiling in step.
 //
+// The counter is also process-wide, not sequence-wide: it counts every
+// goroutine in the binary. Machine cases run one after another, so an
+// ordinary run measures only the sequence, but a parallel test in the
+// same binary or a background goroutine of the program's own lands in
+// the measurement and can trip a ceiling the sequence never approached.
+//
 // Reading it stops the world, so this costs roughly a microsecond per
 // input — negligible for [fuzztape.Machine.Run] and for targeted
 // fuzzing, but real at full fuzzing throughput. Enable it while hunting

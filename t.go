@@ -69,6 +69,13 @@ func (t *T) Errorf(format string, args ...any) {
 }
 
 // Fatalf reports a failure and ends the sequence. It does not return.
+//
+// Call it only from the goroutine running the op sequence. It ends the
+// sequence with a runtime.Goexit, which unwinds the calling goroutine
+// and nothing else, so from a goroutine the system under test started —
+// one scheduled by the sched subpackage, say — it kills that goroutine
+// and lets the sequence carry on around the hole. Report from there
+// with [T.Errorf] instead, which returns.
 func (t *T) Fatalf(format string, args ...any) {
 	t.tb.Helper()
 	t.tb.Fatalf(format, args...)

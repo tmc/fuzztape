@@ -17,6 +17,13 @@
 // This command is that loop. It finds the targets by parsing the test
 // files, so it needs no build, and gives each its own budget.
 //
+// Discovery matches the literal signature func FuzzXxx(f *testing.F).
+// Renaming the import — func FuzzX(f *q.F) after import q "testing" —
+// hides a target from it, and a local package named testing would
+// produce a false one. Resolving that would mean type-checking, which
+// would mean building, which is the thing not needing a working tree to
+// build buys.
+//
 // List prints the targets it found, one "package target" per line.
 //
 // Run fuzzes each target in turn for -time, and reports a table at the
