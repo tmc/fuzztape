@@ -52,9 +52,11 @@ func (g Gen[V]) Or(alts ...Gen[V]) Gen[V] {
 }
 
 // SliceOf returns a generator of slices of up to max values of g.
+// It panics if max is negative or [math.MaxInt].
 func SliceOf[V any](g Gen[V], max int) Gen[[]V] {
+	n := lengths("SliceOf", max)
 	return func(t *Tape) []V {
-		out := make([]V, t.IntN(max+1))
+		out := make([]V, t.IntN(n))
 		for i := range out {
 			out[i] = g(t)
 		}
@@ -65,8 +67,8 @@ func SliceOf[V any](g Gen[V], max int) Gen[[]V] {
 // Weighted returns a generator of opts, selecting opts[i] with
 // frequency proportional to weights[i]. It panics unless opts and
 // weights have the same non-zero length, every weight is non-negative,
-// and at least one is positive. A zero tape yields the first option
-// with a positive weight.
+// at least one is positive, and they sum within int. A zero tape yields
+// the first option with a positive weight.
 func Weighted[V any](opts []V, weights []int) Gen[V] {
 	if len(opts) == 0 {
 		panic("fuzztape: Weighted called with no options")
@@ -78,6 +80,9 @@ func Weighted[V any](opts []V, weights []int) Gen[V] {
 	for _, w := range weights {
 		if w < 0 {
 			panic("fuzztape: Weighted called with a negative weight")
+		}
+		if total > math.MaxInt-w {
+			panic("fuzztape: Weighted called with weights summing past int")
 		}
 		total += w
 	}
@@ -161,10 +166,12 @@ func Float32() Gen[float32] {
 }
 
 // StringASCII returns a generator of printable-ASCII strings of length
-// in [0, max]. A zero tape yields "".
+// in [0, max]. A zero tape yields "". It panics if max is negative or
+// [math.MaxInt].
 func StringASCII(max int) Gen[string] {
+	n := lengths("StringASCII", max)
 	return func(t *Tape) string {
-		b := make([]byte, t.IntN(max+1))
+		b := make([]byte, t.IntN(n))
 		for i := range b {
 			b[i] = ' ' + t.Byte()%('~'-' '+1)
 		}
@@ -181,10 +188,13 @@ func StringASCII(max int) Gen[string] {
 // invalid encodings — a lone surrogate, a truncated sequence, an
 // overlong form — draw raw bytes with [Tape.Bytes] instead; a generator
 // that returns a string cannot represent them.
+//
+// It panics if max is negative or [math.MaxInt].
 func StringUTF8(max int) Gen[string] {
+	n := lengths("StringUTF8", max)
 	return func(t *Tape) string {
 		var b strings.Builder
-		for range t.IntN(max + 1) {
+		for range t.IntN(n) {
 			b.WriteRune(utf8Rune(t))
 		}
 		return b.String()

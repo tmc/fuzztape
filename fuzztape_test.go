@@ -2,6 +2,7 @@ package fuzztape
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -78,6 +79,34 @@ func TestTapeBytes(t *testing.T) {
 	got := tape.Bytes(4)
 	if want := []byte{0xaa, 0xbb, 0, 0}; !bytes.Equal(got, want) {
 		t.Errorf("Bytes(4) = %x, want %x", got, want)
+	}
+}
+
+// TestLengthMaxPanics covers the one contract every generator taking a
+// maximum length shares. Bytes used to clamp a negative max to zero
+// while its three cousins panicked through IntN, so the same mistake
+// produced a silent empty-forever generator in one place and a crash in
+// another.
+func TestLengthMaxPanics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(max int)
+	}{
+		{"Bytes", func(max int) { New(nil).Bytes(max) }},
+		{"SliceOf", func(max int) { SliceOf(Const(0), max) }},
+		{"StringASCII", func(max int) { StringASCII(max) }},
+		{"StringUTF8", func(max int) { StringUTF8(max) }},
+	} {
+		for _, max := range []int{-1, math.MaxInt} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, max), func(t *testing.T) {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("%s(%d) did not panic", tc.name, max)
+					}
+				}()
+				tc.call(max)
+			})
+		}
 	}
 }
 
