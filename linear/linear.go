@@ -65,10 +65,10 @@ type History[I, O any] struct {
 // must record the result with [Op.Done] when the operation returns.
 //
 // An operation that is never completed — a goroutine still in flight
-// when the sequence ends — may be linearized anywhere after its call,
-// with any result. That is what the definition requires: it may have
-// taken effect and it may not, and no result was observed, so nothing
-// about it can be contradicted.
+// when the sequence ends — may be linearized anywhere after its call.
+// That is what the definition requires: it may have taken effect and it
+// may not, and no result was observed, so nothing about it can be
+// contradicted. The search tries it both ways; see [Step].
 func (h *History[I, O]) Start(name string, in I) *Op[I, O] {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -119,7 +119,15 @@ func (h *History[I, O]) String() string {
 // A Step applies one operation to the reference state, reporting
 // whether the recorded result was legal there and, if so, the state
 // that follows. Returning false means this operation cannot be
-// linearized at this point; the search will try it elsewhere.
+// linearized at this point; the search will try it elsewhere. The
+// returned state is read only when ok is true, so a Step is free to
+// return anything alongside false.
+//
+// An operation still pending at the end of the history is offered to
+// step with the zero Out, because no result was observed for it. A
+// step that rejects that is not taken to mean the operation cannot go
+// there: the search also tries the same point with the operation
+// having had no effect at all.
 type Step[S, I, O any] func(s S, in I, out O) (next S, ok bool)
 
 // Check reports whether the history has a linearization under step
@@ -178,18 +186,20 @@ func search[S comparable, I, O any](ops []*Op[I, O], mask uint64, state S, step 
 		if mask&(1<<i) == 0 || op.start > earliestReturn {
 			continue
 		}
-		next, ok := step(state, op.In, op.Out)
-		// A pending operation has no result to check against, so its
-		// state transition is taken and its output is not judged: the
-		// definition allows it to have returned anything, or not to
-		// have taken effect at all. Judging the zero value instead
-		// would reject histories that are perfectly legal — an
-		// unfinished read would be required to have read zero.
-		if !ok && !op.pending() {
-			continue
-		}
+		rest := mask &^ (1 << i)
 		*order = append(*order, op.Name)
-		if search(ops, mask&^(1<<i), next, step, seen, order) {
+		if next, ok := step(state, op.In, op.Out); ok && search(ops, rest, next, step, seen, order) {
+			return true
+		}
+		// A pending operation was never observed to return, so the
+		// definition allows two things, and both have to be tried. It
+		// may have taken effect — the branch above, which asks step
+		// about the zero Out, the only result a Step can be asked
+		// about for an operation that reported none. Or it may not
+		// have taken effect at all, leaving the state untouched, which
+		// is what this branch tries. Neither uses the state a step
+		// that reported false returned: [Step] leaves that undefined.
+		if op.pending() && search(ops, rest, state, step, seen, order) {
 			return true
 		}
 		*order = (*order)[:len(*order)-1]

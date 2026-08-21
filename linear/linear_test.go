@@ -172,6 +172,54 @@ func TestCheckPendingOperation(t *testing.T) {
 	}
 }
 
+// zeroOnFailure is step written the way the [linear.Step] signature
+// invites: it returns the zero state alongside false, because a state
+// reported illegal has no successor to name. A search that used that
+// state anyway would continue from a register holding 0 that nothing
+// ever wrote.
+func zeroOnFailure(s int, in call, out int) (int, bool) {
+	if in.Write {
+		return in.Value, true
+	}
+	if out != s {
+		return 0, false
+	}
+	return s, true
+}
+
+// TestCheckPendingOpKeepsStateHonest covers a pending operation whose
+// zero result is illegal where the search tries to place it. The two
+// things it may have done are "took effect" and "did not", and neither
+// is "moved the reference to whatever the Step returned when it said
+// no". Here the history is genuinely unlinearizable — a read called
+// after write(5) returned 0 — and it must be rejected under either
+// spelling of the same specification.
+func TestCheckPendingOpKeepsStateHonest(t *testing.T) {
+	newHistory := func() *linear.History[call, int] {
+		h := new(linear.History[call, int])
+		w := h.Start("write", call{Write: true, Value: 5})
+		w.Done(h, 0)
+		h.Start("pending-read", call{}) // never completes
+		r := h.Start("read", call{})
+		r.Done(h, 0) // 0 was overwritten by 5 before this read was called
+		return h
+	}
+	for _, tc := range []struct {
+		name string
+		step linear.Step[int, call, int]
+	}{
+		{"state on failure", step},
+		{"zero on failure", zeroOnFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHistory()
+			if _, ok := linear.Check(h, 0, tc.step); ok {
+				t.Errorf("accepted a stale read by way of a pending op:\n%s", h)
+			}
+		})
+	}
+}
+
 // TestCheckEmpty covers the degenerate case.
 func TestCheckEmpty(t *testing.T) {
 	var h linear.History[call, int]
