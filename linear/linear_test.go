@@ -220,6 +220,28 @@ func TestCheckPendingOpKeepsStateHonest(t *testing.T) {
 	}
 }
 
+// TestCheckPanicsOnLongHistory covers the search's own bound. Reporting
+// "not linearizable" for a history the search cannot represent would be
+// indistinguishable from a real violation, which is the one answer a
+// checker must never guess at.
+func TestCheckPanicsOnLongHistory(t *testing.T) {
+	var h linear.History[call, int]
+	for range 65 {
+		op := h.Start("write", call{Write: true, Value: 1})
+		op.Done(&h, 0)
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Check did not panic on a 65-operation history")
+		}
+		if s, ok := r.(string); !ok || !strings.Contains(s, "over the 64") {
+			t.Errorf("panic = %v, want one naming the limit", r)
+		}
+	}()
+	linear.Check(&h, 0, step)
+}
+
 // TestCheckEmpty covers the degenerate case.
 func TestCheckEmpty(t *testing.T) {
 	var h linear.History[call, int]

@@ -135,6 +135,12 @@ type Step[S, I, O any] func(s S, in I, out O) (next S, ok bool)
 // must be comparable, because the search memoizes on it; a state that
 // is not naturally comparable should be projected onto one that is —
 // a string, an array, a hash.
+//
+// It panics on a history of more than 64 operations, which the search
+// cannot represent. Returning false for one would be indistinguishable
+// from a real violation, and the length of a history is a property of
+// the test rather than of the system under test: lower Machine.MaxOps.
+// [Assert] reports the same condition as a test failure instead.
 func Check[S comparable, I, O any](h *History[I, O], init S, step Step[S, I, O]) (order []string, ok bool) {
 	h.mu.Lock()
 	ops := append([]*Op[I, O](nil), h.ops...)
@@ -144,7 +150,7 @@ func Check[S comparable, I, O any](h *History[I, O], init S, step Step[S, I, O])
 		return nil, true
 	}
 	if len(ops) > maxOps {
-		return nil, false
+		panic(fmt.Sprintf("linear: history has %d operations, over the %d the search supports", len(ops), maxOps))
 	}
 	var mask uint64 = 1<<len(ops) - 1
 	found := make([]string, 0, len(ops))
