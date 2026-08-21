@@ -482,6 +482,85 @@ func TestMachineCanary(t *testing.T) {
 	wantAll(t, out, "planted violation", "op sequence", "shrunk failing input")
 }
 
+// panicker is the panic canary: an op that indexes out of range once
+// the counter reaches 7, standing in for the ordinary crash a system
+// under test produces. There is no Check: the panic is the failure.
+var panicker = Machine[*counter]{
+	Name: "FuzzPanicker",
+	Init: canary.Init,
+	Ops: []Op[*counter]{
+		{Name: "inc", Weight: 3, Apply: func(t *T, c *counter) {
+			c.n++
+			if c.n == 7 {
+				var empty []int
+				_ = empty[0]
+			}
+		}},
+		{Name: "dec", When: func(c *counter) bool { return c.n > 0 },
+			Apply: func(t *T, c *counter) { c.n-- }},
+	},
+}
+
+// TestMachinePanicCanary proves a panicking op is an ordinary failure
+// rather than the end of the test binary. A panic in the system under
+// test is the most common thing a fuzz target finds, so everything the
+// package does with a failure has to apply to it: the op sequence is
+// logged, the input is shrunk, and the shrunk input is saved as a seed.
+// The failing Run executes in a child process so it does not fail this
+// test, in a temporary directory so the seed it saves is discarded.
+func TestMachinePanicCanary(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		chdir(t, t.TempDir())
+		panicker.Run(t, 2000)
+		return
+	}
+	out, err := runChild(t, "^TestMachinePanicCanary$")
+	if err == nil {
+		t.Fatalf("planted panic not found in 2000 cases; output:\n%s", out)
+	}
+	wantAll(t, out, "index out of range", "inc panicked", "op sequence",
+		"shrunk failing input", "saved failing input")
+}
+
+// bubblePanicker is panicker under Bubble, for the symmetry check
+// below. It saves no seed: the corpus path is covered by panicker.
+var bubblePanicker = Machine[*counter]{Bubble: true, Init: panicker.Init, Ops: panicker.Ops}
+
+// TestMachineBubblePanicCanary proves a panic shrinks the same way with
+// a bubble around the sequence as without one. Bubbled machines used to
+// convert op panics to failures by accident, as a side effect of the
+// recover that exists for the bubble's exit check, so whether a panic
+// shrank depended on a flag that has nothing to do with panics.
+func TestMachineBubblePanicCanary(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		bubblePanicker.Run(t, 2000)
+		return
+	}
+	out, err := runChild(t, "^TestMachineBubblePanicCanary$")
+	if err == nil {
+		t.Fatalf("planted panic not found in 2000 cases; output:\n%s", out)
+	}
+	wantAll(t, out, "index out of range", "inc panicked", "op sequence", "shrunk failing input")
+}
+
+// TestMachineTracePanic proves Trace surfaces a panicking input rather
+// than swallowing it. corpus.Audit is built on Trace, so a blanket
+// recover here made the audit report the most broken seed in a corpus
+// as decoding to nothing.
+func TestMachineTracePanic(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		// Seven zero bytes decode to seven "inc" ops, the seventh of
+		// which panics.
+		t.Logf("trace: %q", panicker.Trace(t, make([]byte, 7)))
+		return
+	}
+	out, err := runChild(t, "^TestMachineTracePanic$")
+	if err == nil {
+		t.Fatalf("Trace hid a panicking input; output:\n%s", out)
+	}
+	wantAll(t, out, "index out of range", "inc panicked", `inc (panicked:`)
+}
+
 // worker is a system under test exercised under Bubble: "spawn" starts
 // a goroutine that sleeps for up to an hour before reporting, and waits
 // for the report; "sleep" and "settle" advance and quiesce the bubble.

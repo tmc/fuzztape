@@ -123,8 +123,9 @@ func (t *T) TempDir() string { return t.tb.TempDir() }
 
 // apply runs op against s, reporting whether it applied and, if not,
 // the reason it gave to [T.Reject]. A panic that is not a rejection
-// keeps propagating, and a Goexit from Fatalf is not a panic at all,
-// so neither is swallowed here.
+// keeps propagating, out to runOps, which turns it into a failure with
+// the stack it was raised on; a Goexit from Fatalf is not a panic at
+// all. Neither is swallowed here.
 func apply[S any](t *T, op *Op[S], s S) (reason string, ok bool) {
 	t.reason = ""
 	defer func() {

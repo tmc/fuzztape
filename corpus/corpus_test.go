@@ -3,6 +3,7 @@ package corpus_test
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,6 +117,59 @@ func TestAuditFindsEmptyAndDuplicate(t *testing.T) {
 	if dup != 1 {
 		t.Errorf("found %d duplicate seeds, want 1: %v", dup, findings)
 	}
+}
+
+// panicky is a machine whose only op crashes, standing in for a seed
+// that was saved when the system under test still survived it.
+var panicky = fuzztape.Machine[*counter]{
+	Init: machine.Init,
+	Ops: []fuzztape.Op[*counter]{
+		{Name: "inc", Apply: func(t *fuzztape.T, c *counter) {
+			c.n++
+			var empty []int
+			_ = empty[0]
+		}},
+	},
+}
+
+// TestAuditSurfacesPanickingSeed proves the audit reports the most
+// broken thing a corpus can hold. Audit is built on [fuzztape.Machine]
+// Trace, which used to recover every panic and return a truncated
+// trace, so a seed that crashes the machine was filed as "decodes to no
+// ops" — the audit meant to find stale seeds hid the ones that had
+// stopped running at all. The audit runs in a child process because it
+// now fails the test it is given, which is the point.
+func TestAuditSurfacesPanickingSeed(t *testing.T) {
+	if os.Getenv("FUZZTAPE_CANARY") == "1" {
+		dir := t.TempDir()
+		mustWrite(t, dir, []byte{0})
+		for _, f := range corpus.Audit(t, panicky, dir) {
+			t.Logf("finding: %s", f)
+		}
+		return
+	}
+	out, err := child(t, "^TestAuditSurfacesPanickingSeed$")
+	if err == nil {
+		t.Fatalf("a panicking seed passed the audit; output:\n%s", out)
+	}
+	for _, want := range []string{"index out of range", "inc panicked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("child output missing %q; output:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "decodes to no ops") {
+		t.Errorf("audit filed a crashing seed as empty; output:\n%s", out)
+	}
+}
+
+// child re-runs one of this binary's tests in a child process, so a
+// deliberately failing test does not fail the parent.
+func child(t *testing.T, run string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run", run, "-test.v")
+	cmd.Env = append(os.Environ(), "FUZZTAPE_CANARY=1")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func TestAuditCleanCorpus(t *testing.T) {

@@ -38,7 +38,9 @@ with an invariant checked after every step. A machine runs either under
 go test -fuzz ([Machine.Fuzz]) or as a bounded number of pseudo-random
 cases inside an ordinary test ([Machine.Run]), sharing one corpus: a
 failure found by either is shrunk, saved as a seed input, and replayed
-by both.
+by both. A panic out of an op counts as a failure and takes that same
+path, so the crash a fuzz target most often finds arrives as a minimal
+op sequence rather than as a raw traceback.
 
 A typical machine and its two entry points:
 

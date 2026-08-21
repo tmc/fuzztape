@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,12 @@ type Op[S any] struct {
 	// Apply performs the op, drawing parameters from t. An op that
 	// turns out not to apply once it has drawn calls [T.Reject]; an op
 	// that finds a violation calls [T.Fatalf] or [T.Errorf].
+	//
+	// A panic out of Apply — from the system under test, most often —
+	// is caught and reported as a failure with its stack, so it is
+	// logged, shrunk, and saved like any other. That holds only for the
+	// goroutine Apply runs on: a panic on a goroutine the op started
+	// still kills the test binary, as it does anywhere in Go.
 	Apply func(t *T, s S)
 }
 
@@ -223,7 +230,10 @@ func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 // out of synctest.Test, after the sequence itself has returned. Turning
 // that back into an ordinary failure is what keeps the rest of the
 // package working on it: without the recover the test binary dies on
-// the spot, with no shrinking, no op sequence, and no corpus file.
+// the spot, with no shrinking, no op sequence, and no corpus file. A
+// panic from an op never gets this far — runOps converts those, for
+// bubbled and unbubbled machines alike, so that whether a panic shrinks
+// does not depend on Bubble.
 // Recovering is safe because the blocked goroutines stay in their
 // abandoned bubble, where they can no longer affect later inputs. The
 // stacks are worth printing only for the input Run failed on, not for
@@ -268,11 +278,22 @@ func (m Machine[S]) Replay(t *testing.T, data []byte) bool {
 // available without failing.
 //
 // The replay applies the sequence for real, as [Machine.Splits] does,
-// and reports on a subtest of t if the input fails the machine.
+// and reports on a subtest of t if the input fails the machine. An op
+// that panics is reported and marked in the trace, not swallowed: an
+// input that crashes the machine is the most broken thing a corpus can
+// hold, and a trace that hid it would report it as decoding to nothing.
 func (m Machine[S]) Trace(t *testing.T, data []byte) []string {
 	var applied []string
 	t.Run("trace", func(t *testing.T) {
-		defer func() { recover() }()
+		// Under Bubble a goroutine the sequence left blocked panics out
+		// of synctest.Test after runOps has returned; recovering it here
+		// is what runTape does for the same reason. Op panics do not
+		// reach this: runOps reports them itself.
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("fuzztape: %v", r)
+			}
+		}()
 		m.runOpsMaybeBubbled(t, data, &applied)
 	})
 	return applied
@@ -332,11 +353,51 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 		tb.Fatal("fuzztape: Machine has no Ops")
 	}
 	t := &T{Tape: New(data), tb: tb}
+	// A panic in the system under test — an index out of range, a nil
+	// dereference, a closed channel — is the most common thing a fuzz
+	// target finds, so it is converted here into an ordinary failure
+	// rather than allowed to kill the test binary. Everything the rest
+	// of the package does with a failure then applies to it: the op
+	// sequence is logged, the input is shrunk, and the shrunk input is
+	// saved as a seed. Fatalf ends a sequence with a Goexit, which is
+	// not a panic, so it is unaffected, and Reject's panic is unwound
+	// by apply below this. The stack is captured at the recover, where
+	// the panicking frames are still on it.
+	//
+	// This is registered before every other defer here, so it runs
+	// after them: the panic is recovered only once the cleanups have
+	// run and, under Bubble, only inside the bubble, where a recover
+	// still leaves the exit check to report anything left blocked.
+	current := "Init"
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if _, isReject := r.(rejected); isReject {
+			tb.Errorf("fuzztape: Reject called outside an op, in %s", current)
+			return
+		}
+		*applied = append(*applied, fmt.Sprintf("%s (panicked: %v)", current, r))
+		tb.Errorf("fuzztape: %s panicked: %v\n\n%s", current, r, debug.Stack())
+	}()
 	// Cleanups run before this function returns, so a failure they
 	// report still lands inside the op-sequence logging in runTape and
 	// is shrunk like any other. They are registered first, and so run
 	// last, after the final tape offset is recorded.
-	defer t.runCleanups()
+	defer func() {
+		// A panic raised while the cleanups run belongs to them, not to
+		// the last op; one that was already unwinding keeps its own
+		// attribution, because runCleanups returns normally under it.
+		inCleanup := true
+		defer func() {
+			if inCleanup {
+				current = "cleanup"
+			}
+		}()
+		t.runCleanups()
+		inCleanup = false
+	}()
 	if splits != nil {
 		defer func() { *splits = append(*splits, t.Pos()) }()
 	}
@@ -373,12 +434,14 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 				break
 			}
 		}
+		current = op.Name
 		if reason, ok := apply(t, op, s); !ok {
 			*applied = append(*applied, op.Name+" (rejected: "+reason+")")
 			continue
 		}
 		*applied = append(*applied, op.Name)
 		if m.Check != nil {
+			current = "Check after " + op.Name
 			m.Check(t, s)
 		}
 	}
