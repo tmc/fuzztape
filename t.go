@@ -5,11 +5,10 @@ import (
 	"testing"
 )
 
-// A T carries the tape an op draws from and the failure reporting of
-// the test running it. It is the fuzztape analog of [testing.T]: ops,
-// [Machine.Init], and [Machine.Check] receive one, draw parameters
-// through the embedded [Tape], and report failures through its own
-// forwarding methods.
+// A T carries the tape an op draws from and failure reporting. It is the
+// fuzztape analog of [testing.T]: ops, [Machine.Init], and [Machine.Check]
+// receive one, draw parameters through the embedded [Tape], and report
+// failures through its own forwarding methods.
 //
 // T embeds *Tape but not *testing.T. Embedding the test would hand
 // every op Run, Parallel, and Skip, each of which either panics inside
@@ -24,9 +23,54 @@ import (
 type T struct {
 	*Tape
 
-	tb       testing.TB
+	report   reporter
+	record   func(string)
 	reason   string
 	cleanups []func()
+}
+
+// reporter is the part of testing.TB that T needs. It is deliberately
+// package-owned: testing.TB is sealed, so it cannot be the boundary for
+// Machine.Exec.
+type reporter interface {
+	Cleanup(func())
+	Errorf(string, ...any)
+	Fatalf(string, ...any)
+	Logf(string, ...any)
+	Helper()
+	Name() string
+	TempDir() string
+
+	// testingTB returns the test a report reaches, or nil outside a
+	// test. T uses it to mark its own forwarding frames as helpers, so
+	// that a failure is reported at the op that raised it rather than
+	// at the frame that passed it along. Marking has to happen in the
+	// frame being marked, so it cannot be done through Helper.
+	testingTB() testing.TB
+}
+
+type testReporter struct{ tb testing.TB }
+
+func (r testReporter) Cleanup(f func()) { r.tb.Cleanup(f) }
+func (r testReporter) Errorf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Errorf(format, args...)
+}
+func (r testReporter) Fatalf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Fatalf(format, args...)
+}
+func (r testReporter) Logf(format string, args ...any) {
+	r.tb.Helper()
+	r.tb.Logf(format, args...)
+}
+func (r testReporter) Helper()               { r.tb.Helper() }
+func (r testReporter) Name() string          { return r.tb.Name() }
+func (r testReporter) TempDir() string       { return r.tb.TempDir() }
+func (r testReporter) testingTB() testing.TB { return r.tb }
+
+func newTestT(tb testing.TB, data []byte) *T {
+	return &T{Tape: New(data), report: testReporter{tb: tb}}
 }
 
 // NewT returns a T reading data and reporting to tb.
@@ -38,8 +82,8 @@ type T struct {
 // functions run when tb finishes rather than at the end of a sequence,
 // because there is no sequence.
 func NewT(tb testing.TB, data []byte) *T {
-	t := &T{Tape: New(data), tb: tb}
-	tb.Cleanup(t.runCleanups)
+	t := newTestT(tb, data)
+	t.report.Cleanup(t.runCleanups)
 	return t
 }
 
@@ -64,32 +108,45 @@ func (t *T) Reject(format string, args ...any) {
 
 // Errorf reports a failure and continues the sequence.
 func (t *T) Errorf(format string, args ...any) {
-	t.tb.Helper()
-	t.tb.Errorf(format, args...)
+	if tb := t.report.testingTB(); tb != nil {
+		tb.Helper()
+	}
+	t.report.Errorf(format, args...)
 }
 
 // Fatalf reports a failure and ends the sequence. It does not return.
 //
-// Call it only from the goroutine running the op sequence. It ends the
-// sequence with a runtime.Goexit, which unwinds the calling goroutine
-// and nothing else, so from a goroutine the system under test started —
-// one scheduled by the sched subpackage, say — it kills that goroutine
-// and lets the sequence carry on around the hole. Report from there
-// with [T.Errorf] instead, which returns.
+// Call it only from the goroutine running the op sequence. Under a test it
+// ends the sequence with a runtime.Goexit, which unwinds the calling goroutine
+// and nothing else, so from a goroutine the system under test started — one
+// scheduled by the sched subpackage, say — it kills that goroutine and lets
+// the sequence carry on around the hole. Under [Machine.Exec] there is no
+// testing.TB to Goexit, so the sequence ends with an internal panic that Exec
+// recovers into a [Result] — and a panic from another goroutine kills the
+// process rather than one goroutine, so the hole becomes a crash. Report from
+// another goroutine with [T.Errorf], which returns under both.
 func (t *T) Fatalf(format string, args ...any) {
-	t.tb.Helper()
-	t.tb.Fatalf(format, args...)
+	if tb := t.report.testingTB(); tb != nil {
+		tb.Helper()
+	}
+	t.report.Fatalf(format, args...)
 }
 
 // Logf writes to the test log, which go test prints only for a failing
 // input.
 func (t *T) Logf(format string, args ...any) {
-	t.tb.Helper()
-	t.tb.Logf(format, args...)
+	if tb := t.report.testingTB(); tb != nil {
+		tb.Helper()
+	}
+	t.report.Logf(format, args...)
 }
 
 // Helper marks the calling function as a test helper.
-func (t *T) Helper() { t.tb.Helper() }
+func (t *T) Helper() {
+	if tb := t.report.testingTB(); tb != nil {
+		tb.Helper()
+	}
+}
 
 // Cleanup registers f to run when this input's op sequence ends, after
 // the last op and in last-registered-first order. It is where a
@@ -122,11 +179,11 @@ func (t *T) runCleanups() {
 }
 
 // Name returns the name of the running test.
-func (t *T) Name() string { return t.tb.Name() }
+func (t *T) Name() string { return t.report.Name() }
 
 // TempDir returns a temporary directory for the running test, removed
 // when it finishes.
-func (t *T) TempDir() string { return t.tb.TempDir() }
+func (t *T) TempDir() string { return t.report.TempDir() }
 
 // apply runs op against s, reporting whether it applied and, if not,
 // the reason it gave to [T.Reject]. A panic that is not a rejection

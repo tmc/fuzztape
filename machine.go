@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,6 +47,28 @@ func NewOp[S, A any](name string, g Gen[A], apply func(t *T, s S, v A)) Op[S] {
 	return Op[S]{
 		Name:  name,
 		Apply: func(t *T, s S) { apply(t, s, g(t.Tape)) },
+	}
+}
+
+// NewRecordedOp returns an op that records the argument it draws with render.
+// It panics if render is nil.
+//
+// NewOp records no argument value. That is useful for operations whose
+// arguments have no stable external form, but callers that need to emit a
+// history should use NewRecordedOp and choose that form explicitly.
+func NewRecordedOp[S, A any](name string, g Gen[A], render func(A) string, apply func(t *T, s S, v A)) Op[S] {
+	if render == nil {
+		panic("fuzztape: NewRecordedOp called with nil render")
+	}
+	return Op[S]{
+		Name: name,
+		Apply: func(t *T, s S) {
+			v := g(t.Tape)
+			if t.record != nil {
+				t.record(render(v))
+			}
+			apply(t, s, v)
+		},
 	}
 }
 
@@ -342,109 +363,27 @@ func bubbleStacks() string {
 	return strings.Join(keep, "\n\n")
 }
 
-// runOps decodes data into one operation sequence and applies it,
-// checking the invariant after every applied op. It appends the name of
-// each op it applies to *applied, which outlives it so that the caller
-// can report the sequence even when the failure surfaces after runOps
-// has returned. If splits is non-nil it records each op's starting tape
-// offset, plus one final offset past the last byte consumed.
+// runOps runs one input under a test. It appends the name of each op it
+// applies to *applied, which outlives it so that the caller can report the
+// sequence even when the failure surfaces after runOps has returned. If
+// splits is non-nil it records each op's starting tape offset, plus one final
+// offset past the last byte consumed.
+//
+// The execution itself is exec, shared with [Machine.Exec]; runOps only
+// supplies the test to report through and renders the history it accumulates.
 func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits *[]int) {
-	if len(m.Ops) == 0 {
-		tb.Fatal("fuzztape: Machine has no Ops")
+	var result Result
+	e := &execution[S]{
+		reporter: testReporter{tb: tb},
+		result:   &result,
+		stacks:   true,
+		phase:    Init,
+		op:       -1,
 	}
-	t := &T{Tape: New(data), tb: tb}
-	// A panic in the system under test — an index out of range, a nil
-	// dereference, a closed channel — is the most common thing a fuzz
-	// target finds, so it is converted here into an ordinary failure
-	// rather than allowed to kill the test binary. Everything the rest
-	// of the package does with a failure then applies to it: the op
-	// sequence is logged, the input is shrunk, and the shrunk input is
-	// saved as a seed. Fatalf ends a sequence with a Goexit, which is
-	// not a panic, so it is unaffected, and Reject's panic is unwound
-	// by apply below this. The stack is captured at the recover, where
-	// the panicking frames are still on it.
-	//
-	// This is registered before every other defer here, so it runs
-	// after them: the panic is recovered only once the cleanups have
-	// run and, under Bubble, only inside the bubble, where a recover
-	// still leaves the exit check to report anything left blocked.
-	current := "Init"
-	defer func() {
-		r := recover()
-		if r == nil {
-			return
-		}
-		if _, isReject := r.(rejected); isReject {
-			tb.Errorf("fuzztape: Reject called outside an op, in %s", current)
-			return
-		}
-		*applied = append(*applied, fmt.Sprintf("%s (panicked: %v)", current, r))
-		tb.Errorf("fuzztape: %s panicked: %v\n\n%s", current, r, debug.Stack())
-	}()
-	// Cleanups run before this function returns, so a failure they
-	// report still lands inside the op-sequence logging in runTape and
-	// is shrunk like any other. They are registered first, and so run
-	// last, after the final tape offset is recorded.
-	defer func() {
-		// A panic raised while the cleanups run belongs to them, not to
-		// the last op; one that was already unwinding keeps its own
-		// attribution, because runCleanups returns normally under it.
-		inCleanup := true
-		defer func() {
-			if inCleanup {
-				current = "cleanup"
-			}
-		}()
-		t.runCleanups()
-		inCleanup = false
-	}()
-	if splits != nil {
-		defer func() { *splits = append(*splits, t.Pos()) }()
-	}
-	s := m.Init(t)
-	maxOps := m.MaxOps
-	if maxOps <= 0 {
-		maxOps = 64
-	}
-	for range maxOps {
-		if t.Done() {
-			return
-		}
-		enabled := make([]*Op[S], 0, len(m.Ops))
-		total := 0
-		for i := range m.Ops {
-			op := &m.Ops[i]
-			if op.When == nil || op.When(s) {
-				enabled = append(enabled, op)
-				total += max(op.Weight, 1)
-			}
-		}
-		if len(enabled) == 0 {
-			return
-		}
-		if splits != nil {
-			*splits = append(*splits, t.Pos())
-		}
-		w := t.IntN(total)
-		var op *Op[S]
-		for _, o := range enabled {
-			w -= max(o.Weight, 1)
-			if w < 0 {
-				op = o
-				break
-			}
-		}
-		current = op.Name
-		if reason, ok := apply(t, op, s); !ok {
-			*applied = append(*applied, op.Name+" (rejected: "+reason+")")
-			continue
-		}
-		*applied = append(*applied, op.Name)
-		if m.Check != nil {
-			current = "Check after " + op.Name
-			m.Check(t, s)
-		}
-	}
+	// Registered before exec runs, so the history is rendered even when
+	// Fatalf ends the sequence with a Goexit.
+	defer func() { *applied = e.applied() }()
+	m.exec(&T{Tape: New(data), report: e}, e, splits)
 }
 
 // shrink reduces a failing input while it keeps failing: by truncation,
