@@ -394,10 +394,25 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 // subtests of t (which is already failing).
 func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	attempts := 0
-	fails := func(d []byte) bool {
+	// The oracle is a Result, not a subtest result, for every machine
+	// that can run outside a test: shrinking asks "does this still
+	// fail" a few hundred times, and routing that through t.Run made
+	// every attempt a named subtest in the output of an already-failing
+	// test. A bubbled machine still needs one, because synctest.Test
+	// takes a testing.T and a bubble that never runs cannot fail its
+	// exit check.
+	attempt := func(d []byte, splits *[]int) bool {
 		attempts++
-		return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, nil, w) })
+		if m.Bubble {
+			return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, splits, w) })
+		}
+		// runTape ticks the watchdog for the paths that go through it;
+		// this one has to do it itself, or a long shrink looks stalled.
+		defer w.tick()
+		result := m.exec1(d, splits)
+		return result.Failure != nil
 	}
+	fails := func(d []byte) bool { return attempt(d, nil) }
 
 	// Truncation: halve, then trim single bytes.
 	for len(data) > 0 && attempts < 200 {
@@ -420,8 +435,7 @@ func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	// the one that reaches failures truncation cannot.
 	for stop := attempts + 80; attempts < stop; {
 		var splits []int
-		attempts++
-		t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, data, false, &splits, w) })
+		attempt(data, &splits)
 		deleted := false
 		for i := len(splits) - 2; i >= 0 && attempts < stop; i-- {
 			cut := slices.Concat(data[:splits[i]], data[splits[i+1]:])
