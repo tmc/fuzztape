@@ -3,7 +3,10 @@ package fuzztape
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -60,6 +63,100 @@ type Failure struct {
 	Phase   Phase
 	Op      int
 	Message string
+
+	// format and site identify the failure without its values: the
+	// unexpanded format string and the file:line that reported it.
+	// Message cannot serve, because the values in it are exactly what
+	// shrinking is trying to change. They are unexported because they
+	// are a shrinking heuristic, not a contract about failure identity.
+	format string
+	site   string
+}
+
+// sameAs reports whether g is, for shrinking's purposes, the failure f
+// is. Two failures match when they were reported from the same place
+// with the same format string in the same phase; the op index is not
+// part of it, because moving the failure earlier in the sequence is
+// what shrinking does.
+//
+// This is a heuristic. Two genuinely different bugs reported through
+// one shared helper — a table-driven checker that reports every
+// mismatch with the same format — are indistinguishable to it, and
+// shrinking may cross from one to the other. It is strictly better than
+// accepting any failure at all, which is what Go's own minimizer does
+// (internal/fuzz/worker.go accepts a candidate if it returns an error
+// when one was expected, whatever the error).
+func (f *Failure) sameAs(g *Failure) bool {
+	if f == nil || g == nil {
+		return f == nil && g == nil
+	}
+	return f.Phase == g.Phase && f.format == g.format && f.site == g.site
+}
+
+// callsite returns the file:line that reported a failure: the first
+// frame below the execution's Errorf or Fatalf that is not one of this
+// package's reporting entry points.
+//
+// A fixed skip count cannot find it, because the path from T.Errorf and
+// the path from an internal report are different depths. Skipping every
+// frame in this package cannot either: a machine defined in fuzztape's
+// own tests would then resolve to somewhere inside testing. So the rule
+// names the functions that forward a report and stops at whatever
+// called them.
+func callsite() string {
+	var pcs [16]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		f, more := frames.Next()
+		if !forwardsReports(f.Function) {
+			return fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		if !more {
+			return ""
+		}
+	}
+}
+
+// forwardsReports reports whether name is one of this package's
+// functions that passes a failure along rather than raising it.
+func forwardsReports(name string) bool {
+	if !strings.HasPrefix(name, "github.com/tmc/fuzztape.") {
+		return false
+	}
+	return strings.HasSuffix(name, ".Errorf") || strings.HasSuffix(name, ".Fatalf")
+}
+
+// panicSite returns the file:line that raised the panic being recovered:
+// the first frame past the deepest runtime.gopanic that is not in the
+// runtime, which skips the runtime's own raisers such as panicIndex and
+// sigpanic. The deepest, because a deferred function that re-panics —
+// apply does, for every panic that is not a rejection — raises a second
+// panic above the first while the first's frames are still below it. It
+// must be called from the deferred function that recovers, while the
+// panicking frames are still on the stack.
+//
+// A panic is reported through one format string from one line here, so
+// without its own site every panic would be the same failure to
+// shrinking, and a nil dereference could shrink into an index out of
+// range.
+func panicSite() string {
+	var pcs [64]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	site, raised := "", false
+	for {
+		f, more := frames.Next()
+		switch {
+		case f.Function == "runtime.gopanic":
+			raised = true
+		case raised && !strings.HasPrefix(f.Function, "runtime."):
+			site, raised = fmt.Sprintf("%s:%d", f.File, f.Line), false
+		}
+		if !more {
+			return site
+		}
+	}
 }
 
 // A Result is the history and first failure from [Machine.Exec]. Failure is
@@ -103,6 +200,11 @@ type fatal struct{}
 type execution[S any] struct {
 	reporter
 
+	// mu guards the fields a failure touches. T.Errorf is the
+	// documented way for a goroutine the op started to report, so fail
+	// runs concurrently with the sequence goroutine advancing to the
+	// next op.
+	mu     sync.Mutex
 	result *Result
 	// stacks reports whether a panic is reported with the stack it was
 	// raised on. Only a test has anywhere to print one.
@@ -118,9 +220,11 @@ type execution[S any] struct {
 	note string
 }
 
-// fail records a failure against the current phase without reporting it.
-// Result.Failure keeps the first one; failed is per phase.
-func (e *execution[S]) fail(format string, args ...any) {
+// fail records a failure raised at site against the current phase without
+// reporting it. Result.Failure keeps the first one; failed is per phase.
+func (e *execution[S]) fail(site, format string, args ...any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.failed = true
 	if e.phase == Apply && e.record != nil {
 		e.record.Outcome = Failed
@@ -130,6 +234,8 @@ func (e *execution[S]) fail(format string, args ...any) {
 			Phase:   e.phase,
 			Op:      e.op,
 			Message: fmt.Sprintf(format, args...),
+			format:  format,
+			site:    site,
 		}
 	}
 }
@@ -138,7 +244,7 @@ func (e *execution[S]) Errorf(format string, args ...any) {
 	if tb := e.testingTB(); tb != nil {
 		tb.Helper()
 	}
-	e.fail(format, args...)
+	e.fail(callsite(), format, args...)
 	e.reporter.Errorf(format, args...)
 }
 
@@ -146,7 +252,7 @@ func (e *execution[S]) Fatalf(format string, args ...any) {
 	if tb := e.testingTB(); tb != nil {
 		tb.Helper()
 	}
-	e.fail(format, args...)
+	e.fail(callsite(), format, args...)
 	e.reporter.Fatalf(format, args...)
 }
 
@@ -165,8 +271,9 @@ func (e *execution[S]) where() string {
 	}
 }
 
-// panicked reports a panic as an ordinary failure of the current phase.
-func (e *execution[S]) panicked(r any) {
+// panicked reports a panic raised at site as an ordinary failure of the
+// current phase.
+func (e *execution[S]) panicked(r any, site string) {
 	where := e.where()
 	if e.phase == Apply && e.record != nil {
 		e.record.Outcome = Failed
@@ -174,13 +281,25 @@ func (e *execution[S]) panicked(r any) {
 	} else {
 		e.note = fmt.Sprintf("%s (panicked: %v)", where, r)
 	}
+	// Cleanups run while the panic is still unwinding, so a failure they
+	// reported has already claimed Result.Failure even though the panic
+	// happened first. The panic is the primary occurrence: drop the
+	// cleanup's claim so the first failure is the one that caused the
+	// rest. A panic raised inside a cleanup keeps its own attribution,
+	// because then this is the cleanup phase too.
+	e.mu.Lock()
+	if f := e.result.Failure; f != nil && f.Phase == Cleanup && e.phase != Cleanup {
+		e.result.Failure = nil
+	}
+	e.mu.Unlock()
+	format, args := "fuzztape: %s panicked: %v", []any{where, r}
 	if e.stacks {
 		// The stack is captured here, at the recover, where the
 		// panicking frames are still on it.
-		e.Errorf("fuzztape: %s panicked: %v\n\n%s", where, r, debug.Stack())
-		return
+		format, args = format+"\n\n%s", append(args, debug.Stack())
 	}
-	e.Errorf("fuzztape: %s panicked: %v", where, r)
+	e.fail(site, format, args...)
+	e.reporter.Errorf(format, args...)
 }
 
 // applied renders the history as the op-sequence lines a failing input logs.
@@ -204,8 +323,9 @@ func (e *execution[S]) applied() []string {
 
 // exec decodes data into one operation sequence and applies it, checking the
 // invariant after every applied op and recording each selection in e. If
-// splits is non-nil it records each op's starting tape offset, plus one final
-// offset past the last byte consumed.
+// splits is non-nil it records each op's starting tape offset, plus a final
+// offset past the last byte consumed — that last one only when the sequence
+// ended without reading past the end of the input.
 //
 // It is the whole execution: [Machine.Run], [Machine.Fuzz], [Machine.Trace],
 // [Machine.Splits], and [Machine.Exec] all reach it, differing only in the
@@ -239,7 +359,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 			e.Errorf("fuzztape: Reject called outside an op, in %s", e.where())
 			return
 		}
-		e.panicked(r)
+		e.panicked(r, panicSite())
 	}()
 	// Cleanups run before this function returns, so a failure they
 	// report still lands inside the op-sequence logging in runTape and
@@ -303,19 +423,27 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 			}
 		}
 
+		e.mu.Lock()
 		e.result.Records = append(e.result.Records, Record{Name: op.Name, Outcome: Applied})
 		e.record = &e.result.Records[len(e.result.Records)-1]
 		e.phase, e.op, e.failed = Apply, len(e.result.Records)-1, false
+		e.mu.Unlock()
 		reason, ok := apply(t, op, s)
+		e.mu.Lock()
 		if !ok {
 			if !e.failed {
 				e.record.Outcome = Rejected
 			}
 			e.record.Reason = reason
+		}
+		e.mu.Unlock()
+		if !ok {
 			continue
 		}
 		if m.Check != nil {
+			e.mu.Lock()
 			e.phase, e.failed = Check, false
+			e.mu.Unlock()
 			m.Check(t, s)
 		}
 	}

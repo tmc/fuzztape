@@ -157,7 +157,7 @@ type Machine[S any] struct {
 // its own and would look stalled the moment it started orchestrating.
 func (m Machine[S]) Fuzz(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		m.runTape(t, data, true, nil, nil)
+		m.runTape(t, data, true, nil, nil, nil)
 	})
 }
 
@@ -195,7 +195,7 @@ func (m Machine[S]) Run(t *testing.T, iters int) {
 	for i := range iters {
 		data := make([]byte, 16+rng.Intn(496))
 		rng.Read(data)
-		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil, w) }) {
+		if t.Run(fmt.Sprintf("case%04d", i), func(t *testing.T) { m.runTape(t, data, true, nil, nil, w) }) {
 			continue
 		}
 		m.reportFailure(t, data, w)
@@ -243,7 +243,7 @@ func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 			ok = false
 			continue
 		}
-		if !t.Run("seed/"+e.Name(), func(t *testing.T) { m.runTape(t, data, true, nil, w) }) {
+		if !t.Run("seed/"+e.Name(), func(t *testing.T) { m.runTape(t, data, true, nil, nil, w) }) {
 			t.Logf("fuzztape: seed %s still fails; it is already minimal, so it is not reshrunk", path)
 			ok = false
 		}
@@ -283,7 +283,7 @@ func corpusEntries(dir string) ([]os.DirEntry, error) {
 // stacks are worth printing only for the input Run failed on, not for
 // the shrink attempts that follow, which by then are reporting the
 // leaks of every attempt before them.
-func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]int, w *watchdog) {
+func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]int, out *Result, w *watchdog) {
 	// Registered first, so it runs last: the input has completed, for
 	// the watchdog's purposes, once everything else here has run.
 	defer w.tick()
@@ -303,17 +303,17 @@ func (m Machine[S]) runTape(t *testing.T, data []byte, stacks bool, splits *[]in
 		}
 	}()
 	if !m.Bubble {
-		m.runOps(t, data, &applied, splits)
+		m.runOps(t, data, &applied, splits, out)
 		return
 	}
-	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied, splits) })
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, &applied, splits, out) })
 }
 
 // Replay runs one input against a fresh system, as a subtest of t, and
 // reports whether it passed. It is what a saved corpus file needs to be
 // re-run by hand, and what a generated reproduction case calls.
 func (m Machine[S]) Replay(t *testing.T, data []byte) bool {
-	return t.Run("replay", func(t *testing.T) { m.runTape(t, data, true, nil, nil) })
+	return t.Run("replay", func(t *testing.T) { m.runTape(t, data, true, nil, nil, nil) })
 }
 
 // Trace replays data against a fresh system and returns the names of
@@ -347,10 +347,10 @@ func (m Machine[S]) Trace(t *testing.T, data []byte) []string {
 // failure reporting runTape adds.
 func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]string) {
 	if !m.Bubble {
-		m.runOps(t, data, applied, nil)
+		m.runOps(t, data, applied, nil, nil)
 		return
 	}
-	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, applied, nil) })
+	synctest.Test(t, func(t *testing.T) { m.runOps(t, data, applied, nil, nil) })
 }
 
 // Splits reports the tape offsets at which the ops decoded from data
@@ -367,7 +367,7 @@ func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]str
 // dumps.
 func (m Machine[S]) Splits(t *testing.T, data []byte) []int {
 	var splits []int
-	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits, nil) })
+	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits, nil, nil) })
 	return splits
 }
 
@@ -394,7 +394,7 @@ func bubbleStacks() string {
 //
 // The execution itself is exec, shared with [Machine.Exec]; runOps only
 // supplies the test to report through and renders the history it accumulates.
-func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits *[]int) {
+func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits *[]int, out *Result) {
 	var result Result
 	e := &execution[S]{
 		reporter: testReporter{tb: tb},
@@ -403,20 +403,47 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 		phase:    Init,
 		op:       -1,
 	}
-	// Registered before exec runs, so the history is rendered even when
-	// Fatalf ends the sequence with a Goexit.
-	defer func() { *applied = e.applied() }()
+	// Registered before exec runs, so the history and the result are
+	// both delivered even when Fatalf ends the sequence with a Goexit.
+	defer func() {
+		*applied = e.applied()
+		if out != nil {
+			*out = result
+		}
+	}()
 	m.exec(&T{Tape: New(data), report: e}, e, splits)
 }
 
-// shrink reduces a failing input while it keeps failing: by truncation,
-// then by deleting the bytes of whole middle ops, then by bisecting
-// individual bytes toward zero. Because reads past the end of the input
-// and zero bytes both decode to the simplest choice, byte-level edits
-// shrink the decoded op sequence and its values. Attempts run as
-// subtests of t (which is already failing).
+// shrink reduces a failing input while it keeps failing the same way:
+// by truncation, then by deleting the bytes of whole middle ops, then
+// by bisecting individual bytes toward zero. Because reads past the end
+// of the input and zero bytes both decode to the simplest choice,
+// byte-level edits shrink the decoded op sequence and its values.
+// Attempts run as subtests of t (which is already failing).
+//
+// "The same way" is the part that makes the result trustworthy. A
+// smaller input that fails for an unrelated reason is not a smaller
+// case of the original bug, and reporting it as one sends the reader
+// after the wrong defect while the original goes unfixed. Shrinking
+// touches every byte, so it is well placed to wander into a second bug.
+// Attempts are therefore accepted only when they reproduce the original
+// failure's identity (see Failure.sameAs), which is more than Go's own
+// minimizer requires of a crasher.
+//
+// If the original failure has no identity to preserve — the machine
+// failed in a way that recorded none — shrinking falls back to
+// accepting any failure, which is the previous behavior.
 func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	attempts := 0
+	// The identity to preserve, read from the input as it arrived.
+	var want *Failure
+	if m.Bubble {
+		var r Result
+		t.Run("shrink-origin", func(t *testing.T) { m.runTape(t, data, false, nil, &r, w) })
+		want = r.Failure
+	} else {
+		want = m.exec1(data, nil).Failure
+	}
 	// The oracle is a Result, not a subtest result, for every machine
 	// that can run outside a test: shrinking asks "does this still
 	// fail" a few hundred times, and routing that through t.Run made
@@ -424,16 +451,29 @@ func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	// test. A bubbled machine still needs one, because synctest.Test
 	// takes a testing.T and a bubble that never runs cannot fail its
 	// exit check.
+	// keeps reports whether got is the failure shrinking set out to
+	// preserve. With no identity to compare against, any failure will
+	// do; that is the old behavior, and it is still better than none.
+	keeps := func(got *Failure) bool {
+		if got == nil {
+			return false
+		}
+		if want == nil {
+			return true
+		}
+		return want.sameAs(got)
+	}
 	attempt := func(d []byte, splits *[]int) bool {
 		attempts++
 		if m.Bubble {
-			return !t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, splits, w) })
+			var r Result
+			t.Run(fmt.Sprintf("shrink%03d", attempts), func(t *testing.T) { m.runTape(t, d, false, splits, &r, w) })
+			return keeps(r.Failure)
 		}
 		// runTape ticks the watchdog for the paths that go through it;
 		// this one has to do it itself, or a long shrink looks stalled.
 		defer w.tick()
-		result := m.exec1(d, splits)
-		return result.Failure != nil
+		return keeps(m.exec1(d, splits).Failure)
 	}
 	fails := func(d []byte) bool { return attempt(d, nil) }
 

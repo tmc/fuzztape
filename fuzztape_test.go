@@ -304,7 +304,7 @@ func TestMachineRunPasses(t *testing.T) {
 func TestMachineFuzzOpSelection(t *testing.T) {
 	// A zero tape of any length decodes to a prefix of "inc" ops (the
 	// first enabled op) and never trips the clean invariant.
-	clean.runTape(t, make([]byte, 64), true, nil, nil)
+	clean.runTape(t, make([]byte, 64), true, nil, nil, nil)
 }
 
 func TestMachineSplits(t *testing.T) {
@@ -357,7 +357,7 @@ func TestMachineReject(t *testing.T) {
 	var applied []string
 	// "odd" then "bump": the second op rejects, and the sequence
 	// survives it.
-	rejecter.runOps(t, []byte{0, 1, 0, 0}, &applied, nil)
+	rejecter.runOps(t, []byte{0, 1, 0, 0}, &applied, nil, nil)
 	if t.Failed() {
 		t.Fatal("Reject failed the test; it must not")
 	}
@@ -374,7 +374,7 @@ func TestMachineReject(t *testing.T) {
 // unwinding into the next op: the panic Reject uses is caught per op.
 func TestMachineRejectRestoresState(t *testing.T) {
 	var applied []string
-	rejecter.runOps(t, bytes.Repeat([]byte{1, 0}, 8), &applied, nil)
+	rejecter.runOps(t, bytes.Repeat([]byte{1, 0}, 8), &applied, nil, nil)
 	if t.Failed() {
 		t.Fatal("repeated rejections failed the test")
 	}
@@ -400,7 +400,7 @@ func TestOpOver(t *testing.T) {
 	// The first op cannot be "take": with an empty bag it is disabled,
 	// so a zero tape selects "add" every time.
 	var applied []string
-	m.runOps(t, make([]byte, 6), &applied, nil)
+	m.runOps(t, make([]byte, 6), &applied, nil, nil)
 	if t.Failed() {
 		t.Fatal("OpOver machine failed")
 	}
@@ -411,7 +411,7 @@ func TestOpOver(t *testing.T) {
 	}
 	// Alternating selector bytes reach "take" once the bag is non-empty.
 	picked = nil
-	m.runOps(t, []byte{0, 0, 1, 0, 1, 0}, &applied, nil)
+	m.runOps(t, []byte{0, 0, 1, 0, 1, 0}, &applied, nil, nil)
 	if len(picked) == 0 {
 		t.Error("take never ran")
 	}
@@ -435,7 +435,7 @@ func TestNewOp(t *testing.T) {
 		Ops:  []Op[*counter]{op},
 	}
 	var applied []string
-	m.runOps(t, []byte{0, 2, 0, 0}, &applied, nil)
+	m.runOps(t, []byte{0, 2, 0, 0}, &applied, nil, nil)
 	if len(seen) == 0 {
 		t.Fatal("op never applied")
 	}
@@ -461,7 +461,7 @@ func TestCleanupOrder(t *testing.T) {
 		Ops: clean.Ops,
 	}
 	var applied []string
-	m.runOps(t, make([]byte, 3), &applied, nil)
+	m.runOps(t, make([]byte, 3), &applied, nil, nil)
 	want := []string{"registered second", "registered first"}
 	if !slices.Equal(order, want) {
 		t.Errorf("cleanup order = %v, want %v", order, want)
@@ -784,4 +784,60 @@ func FuzzMachineCanaryClean(f *testing.F) {
 	f.Add([]byte{})
 	f.Add(bytes.Repeat([]byte{0xff}, 128))
 	clean.Fuzz(f)
+}
+
+// TestIntNHugeBound covers the selector byte that used to spin. Byte 3
+// asks IntN for a power of two; against a bound above MaxInt/2 the old
+// doubling loop overflowed to a negative p that stayed below n forever.
+// The engine reports a spin as a crasher, so this was a harness bug
+// wearing a system-under-test bug's clothes.
+//
+// It runs in a goroutine with a deadline so that a regression fails the
+// test instead of wedging the package's whole run.
+func TestIntNHugeBound(t *testing.T) {
+	for _, n := range []int{math.MaxInt, math.MaxInt - 1, math.MaxInt/2 + 1, 1 << 62} {
+		done := make(chan int, 1)
+		go func() {
+			tape := New([]byte{3})
+			done <- tape.IntN(n)
+		}()
+		select {
+		case got := <-done:
+			if got < 0 || got >= n {
+				t.Errorf("IntN(%d) = %d, outside [0, n)", n, got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("IntN(%d) did not return: the power-of-two loop is spinning again", n)
+		}
+	}
+}
+
+func TestIntRangePanics(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lo, hi int
+	}{
+		{"hi below lo", 5, 4},
+		{"full int range", math.MinInt, math.MaxInt},
+		{"MaxInt values from zero", 0, math.MaxInt},
+		{"MaxInt values from minus one", -1, math.MaxInt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("IntRange(%d, %d) did not panic", tc.lo, tc.hi)
+				}
+			}()
+			IntRange(tc.lo, tc.hi)
+		})
+	}
+}
+
+// TestIntRangeWidest checks the boundary is placed so that the widest
+// representable range still works rather than being rejected with it.
+func TestIntRangeWidest(t *testing.T) {
+	g := IntRange(0, math.MaxInt-1) // exactly MaxInt values
+	if got := g(New([]byte{3})); got < 0 {
+		t.Errorf("IntRange(0, MaxInt-1) yielded %d", got)
+	}
 }
