@@ -17,12 +17,23 @@
 // This command is that loop. It finds the targets by parsing the test
 // files, so it needs no build, and gives each its own budget.
 //
-// Discovery matches the literal signature func FuzzXxx(f *testing.F).
-// Renaming the import — func FuzzX(f *q.F) after import q "testing" —
-// hides a target from it, and a local package named testing would
-// produce a false one. Resolving that would mean type-checking, which
-// would mean building, which is the thing not needing a working tree to
-// build buys.
+// Discovery parses the test files rather than building them, so it
+// works on a tree that does not compile — the state a repository is in
+// precisely when someone wants to know what its fuzz targets are. It is
+// one path, and it is loud about what that path cannot see.
+//
+// It matches func FuzzXxx(f *testing.F) against the name "testing" is
+// bound to in that file, so a renamed import — func FuzzX(f *q.F) after
+// import q "testing" — is found, and a *testing.F naming some other
+// local package is reported rather than counted. It honors build
+// constraints through go/build, so a file go test would not compile
+// contributes no targets; -tags adds tags, on top of any in GOFLAGS. A
+// subdirectory with its own go.mod is a different module and is not
+// walked.
+//
+// Anything it cannot decide is written to stderr and makes the command
+// exit non-zero, because a fuzzer that quietly skips a target reports
+// success for work it did not do.
 //
 // List prints the targets it found, one "package target" per line.
 //
@@ -49,6 +60,7 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -71,16 +83,20 @@ func main() {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	fuzztime := fs.Duration("time", 30*time.Second, "fuzzing budget per target")
 	verbose := fs.Bool("v", false, "pass -v to go test")
+	tags := fs.String("tags", "", "comma-separated build tags, added to those in GOFLAGS")
 	fs.Parse(args)
 
 	dir := "."
 	if rest := fs.Args(); len(rest) > 0 {
 		dir = rest[0]
 	}
-	targets, err := discover(dir)
+	targets, gaps, err := discover(buildContext(*tags), dir)
 	if err != nil {
 		log("%v", err)
 		os.Exit(1)
+	}
+	for _, g := range gaps {
+		log("%s", g)
 	}
 	if len(targets) == 0 {
 		log("no fuzz targets under %s", dir)
@@ -106,6 +122,12 @@ func main() {
 	default:
 		usage()
 	}
+	if len(gaps) > 0 {
+		// The work that could be done was done and reported. Exiting
+		// non-zero is what keeps a gap from reading as a clean run.
+		log("%d target(s) could not be decided; see above", len(gaps))
+		os.Exit(1)
+	}
 }
 
 func usage() {
@@ -127,38 +149,72 @@ type Target struct {
 
 // discover walks dir and returns every fuzz target it finds, sorted.
 //
-// It parses the test files rather than building them, which keeps it
-// working on a tree that does not currently compile — the state a
-// repository is in precisely when someone wants to know what the fuzz
-// targets are.
-func discover(dir string) ([]Target, error) {
+// It reports the targets it is sure of, and separately the gaps: the
+// places where a target may exist that it could not decide about. A gap
+// is not an error — the walk continues and the other targets are still
+// reported — but the caller is expected to print them and exit non-zero,
+// because a target skipped in silence is indistinguishable from one that
+// passed.
+func discover(ctxt *build.Context, dir string) ([]Target, []string, error) {
 	var targets []Target
+	var gaps []string
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if name := d.Name(); name == "testdata" || name == "vendor" ||
+			name := d.Name()
+			if name == "testdata" || name == "vendor" ||
 				(len(name) > 1 && (name[0] == '.' || name[0] == '_') && path != dir) {
 				return filepath.SkipDir
+			}
+			// A directory with its own go.mod is a different module.
+			// go test ./... stops at that boundary, so a target below
+			// it would be listed and then never run.
+			if path != dir {
+				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
 		if !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		// Build constraints decide whether go test compiles this file
+		// at all. MatchFile answers from the name and the //go:build
+		// line, with no build and no type-checking.
+		switch ok, err := ctxt.MatchFile(filepath.Dir(path), filepath.Base(path)); {
+		case err != nil:
+			gaps = append(gaps, fmt.Sprintf("%s: build constraints: %v", path, err))
+			return nil
+		case !ok:
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			// A test file that does not parse has no discoverable
 			// targets, but it is not a reason to abandon the walk.
-			fmt.Fprintf(os.Stderr, "fuzztape: %s: %v\n", path, err)
+			gaps = append(gaps, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
-		pkg := filepath.Dir(path)
+		pkg := filepath.ToSlash(filepath.Dir(path))
+		testing := testingName(f)
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if ok && isFuzzTarget(fn) {
-				targets = append(targets, Target{Pkg: filepath.ToSlash(pkg), Name: fn.Name.Name})
+			if !ok {
+				continue
+			}
+			switch name := fuzzParamPkg(fn); {
+			case name == "":
+			case testing != "" && name == testing:
+				targets = append(targets, Target{Pkg: pkg, Name: fn.Name.Name})
+			case name == "testing":
+				// *testing.F where testing is not the standard
+				// library: a local package by that name, or a
+				// dot-import. go test would not accept it as a
+				// target, but saying so beats silence.
+				gaps = append(gaps, fmt.Sprintf("%s: %s takes *testing.F but this file does not import \"testing\" under that name", path, fn.Name.Name))
 			}
 		}
 		return nil
@@ -169,28 +225,86 @@ func discover(dir string) ([]Target, error) {
 		}
 		return targets[i].Name < targets[j].Name
 	})
-	return targets, err
+	sort.Strings(gaps)
+	return targets, gaps, err
 }
 
-// isFuzzTarget reports whether fn has the shape go test recognizes:
-// func FuzzXxx(f *testing.F), with no receiver and no results.
-func isFuzzTarget(fn *ast.FuncDecl) bool {
+// testingName returns the name the standard library's testing package is
+// bound to in f, which is "testing" unless the import was renamed. It
+// returns "" if f does not import testing, or imports it as _ or . —
+// neither of which can spell *testing.F.
+func testingName(f *ast.File) string {
+	for _, spec := range f.Imports {
+		if spec.Path.Value != `"testing"` {
+			continue
+		}
+		if spec.Name == nil {
+			return "testing"
+		}
+		if name := spec.Name.Name; name != "_" && name != "." {
+			return name
+		}
+	}
+	return ""
+}
+
+// fuzzParamPkg reports the package qualifier of fn's sole parameter if fn
+// has the shape go test recognizes for a fuzz target — func FuzzXxx(f
+// *pkg.F), with no receiver and no results — and "" if it does not. The
+// caller decides whether that qualifier names the testing package.
+func fuzzParamPkg(fn *ast.FuncDecl) string {
 	if fn.Recv != nil || fn.Name == nil || !strings.HasPrefix(fn.Name.Name, "Fuzz") {
-		return false
+		return ""
 	}
 	if fn.Type.Results != nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-		return false
+		return ""
 	}
 	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
 	if !ok {
-		return false
+		return ""
 	}
 	sel, ok := star.X.(*ast.SelectorExpr)
-	if !ok {
-		return false
+	if !ok || sel.Sel.Name != "F" {
+		return ""
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "testing" && sel.Sel.Name == "F"
+	if !ok {
+		return ""
+	}
+	return pkg.Name
+}
+
+// buildContext returns the context discovery evaluates build constraints
+// in: the default one, plus the tags in GOFLAGS and then the -tags flag,
+// so that fuzztape sees the same files as a go test run in the same
+// environment.
+func buildContext(tags string) *build.Context {
+	ctxt := build.Default
+	ctxt.BuildTags = append(goflagsTags(), splitTags(tags)...)
+	return &ctxt
+}
+
+// goflagsTags returns the tags set by -tags in GOFLAGS. GOFLAGS is a
+// space-separated flag list, so the tags are the value of the last -tags
+// in it, matching how the go command resolves a repeated flag.
+func goflagsTags() []string {
+	var tags []string
+	for _, f := range strings.Fields(os.Getenv("GOFLAGS")) {
+		if v, ok := strings.CutPrefix(f, "-tags="); ok {
+			tags = splitTags(v)
+		} else if v, ok := strings.CutPrefix(f, "--tags="); ok {
+			tags = splitTags(v)
+		}
+	}
+	return tags
+}
+
+// splitTags splits a -tags value, which is comma-separated.
+func splitTags(v string) []string {
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }
 
 // pkgPattern turns a directory into the relative package pattern the
