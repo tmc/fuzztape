@@ -20,8 +20,15 @@
 // The cost is honest and worth stating: the system under test has to
 // call Yield at the points where interleaving matters. That is the same
 // bargain deterministic simulation testing always makes. A scheduler
-// cannot preempt a goroutine that never offers a scheduling point, and
-// nothing here weakens the case for also running under -race.
+// cannot preempt a goroutine that never offers a scheduling point.
+//
+// A Scheduler and -race are complementary, not composable. Step, Yield
+// and synctest.Wait order every segment through channels and a mutex,
+// so the race detector sees a fully synchronized program and reports
+// nothing — including for a lost update that a Machine Check catches in
+// the same run. Run the code under -race outside a Scheduler as well;
+// a clean -race under a Scheduler is not evidence of a race-free
+// program.
 //
 // A Scheduler requires Machine.Bubble, because it uses
 // [testing/synctest.Wait] to know when every other goroutine has
