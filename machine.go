@@ -354,10 +354,9 @@ func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]str
 }
 
 // Splits reports the tape offsets at which the ops decoded from data
-// begin, by replaying data against a fresh system in a subtest of t.
-// The final element is the offset just past the last byte the sequence
-// consumed, so data[splits[i]:splits[i+1]] holds the bytes of op i.
-// Cutting or splicing inputs at these offsets edits whole operations.
+// begin, by replaying data against a fresh system in a subtest of t, so
+// that data[splits[i]:splits[i+1]] holds the bytes of op i. Cutting or
+// splicing inputs at these offsets edits whole operations.
 //
 // The replay applies the sequence for real: Init runs, ops run, and if
 // the input fails the machine the failure is reported on the subtest.
@@ -365,6 +364,13 @@ func (m Machine[S]) runOpsMaybeBubbled(t *testing.T, data []byte, applied *[]str
 // set of blocked goroutines behind in an abandoned bubble — bounded
 // and harmless, as for shrink attempts, but visible in goroutine
 // dumps.
+//
+// A terminal offset, just past the last byte the sequence consumed, is
+// appended only when the sequence ended on its own terms. If the input
+// ran out inside the last operation, that operation decoded part of
+// itself from zeros past the end and there is no trailing offset:
+// appending bytes there would be read by that operation rather than
+// starting a new one, so it is not a boundary a caller can graft onto.
 func (m Machine[S]) Splits(t *testing.T, data []byte) []int {
 	var splits []int
 	t.Run("splits", func(t *testing.T) { m.runTape(t, data, false, &splits, nil, nil) })

@@ -841,3 +841,15 @@ func TestIntRangeWidest(t *testing.T) {
 		t.Errorf("IntRange(0, MaxInt-1) yielded %d", got)
 	}
 }
+
+// TestMachineSplitsTruncated covers a tape that runs out inside an op.
+// The op decodes the rest of itself from zeros past the end, so its
+// start is a boundary but the end of the tape is not: grafting bytes
+// there would feed that op rather than start a new one.
+func TestMachineSplitsTruncated(t *testing.T) {
+	// A 0xff selector wants 8 payload bytes; only 3 are there.
+	splits := clean.Splits(t, bytes.Repeat([]byte{0xff}, 4))
+	if !slices.Equal(splits, []int{0}) {
+		t.Fatalf("Splits(ff×4) = %v, want [0] (no terminal offset: the last op was truncated)", splits)
+	}
+}

@@ -376,7 +376,19 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		e.phase, e.op = phase, op
 	}()
 	if splits != nil {
-		defer func() { *splits = append(*splits, t.Pos()) }()
+		// The terminal offset is recorded only when the sequence ended
+		// without running off the end of the input. If the tape ran
+		// out inside the last operation, that operation decoded part
+		// of itself from zeros past the end, so its "end" is not a
+		// boundary: bytes appended there are read by that operation,
+		// not by a new one, and a caller grafting at it would silently
+		// mutate the operation before the graft rather than extend the
+		// sequence.
+		defer func() {
+			if !t.Tape.overrun() {
+				*splits = append(*splits, t.Pos())
+			}
+		}()
 	}
 	if len(m.Ops) == 0 {
 		e.Errorf("fuzztape: Machine has no Ops")

@@ -11,6 +11,13 @@ import (
 type Tape struct {
 	data []byte
 	pos  int
+
+	// over records that a read ran off the end of the input and was
+	// served a zero. It distinguishes a sequence that ended because the
+	// tape ended from one that ended on its own terms, which callers
+	// splicing tapes together need in order to know whether appending
+	// bytes would start a new operation or feed the last one.
+	over bool
 }
 
 // New returns a Tape reading data.
@@ -30,6 +37,14 @@ func (t *Tape) Pos() int {
 	return t.pos
 }
 
+// overrun reports whether any read has run off the end of the input.
+// A tape that has overrun decoded some part of its last operation from
+// zeros that are not in the input, so the position it stopped at is not
+// a boundary anything can be grafted onto.
+func (t *Tape) overrun() bool {
+	return t.over
+}
+
 // Len returns the length of the input, which bounds the work a
 // correctly behaved system under test should do for it.
 func (t *Tape) Len() int {
@@ -39,6 +54,7 @@ func (t *Tape) Len() int {
 // Byte returns the next byte, or 0 when the input is exhausted.
 func (t *Tape) Byte() byte {
 	if t.pos >= len(t.data) {
+		t.over = true
 		return 0
 	}
 	b := t.data[t.pos]
