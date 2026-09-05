@@ -23,12 +23,21 @@ func Const[V any](v V) Gen[V] {
 }
 
 // IntRange returns a generator of integers in [lo, hi].
-// It panics if hi < lo.
+//
+// It panics if hi < lo, or if the range holds more than [math.MaxInt]
+// values — [Tape.IntN] draws from a count, and a range that wide has no
+// representable one. Computing hi-lo+1 anyway would overflow to zero or
+// a negative number and panic inside IntN, blaming the draw for the
+// caller's arithmetic.
 func IntRange(lo, hi int) Gen[int] {
 	if hi < lo {
 		panic("fuzztape: IntRange called with hi < lo")
 	}
-	return func(t *Tape) int { return lo + t.IntN(hi-lo+1) }
+	if uint64(hi)-uint64(lo) >= math.MaxInt {
+		panic("fuzztape: IntRange called with a range wider than MaxInt values")
+	}
+	n := hi - lo + 1
+	return func(t *Tape) int { return lo + t.IntN(n) }
 }
 
 // OneOf returns a generator that defers to one of gens.

@@ -3,6 +3,7 @@ package fuzztape
 import (
 	"encoding/binary"
 	"math"
+	"math/bits"
 )
 
 // A Tape consumes a fuzz input as a sequence of typed decisions.
@@ -85,13 +86,22 @@ func (t *Tape) IntN(n int) int {
 	case 2:
 		return n - 1
 	case 3:
-		p := 1
-		for p*2 < n {
-			p *= 2
-		}
-		return min(p, n-1)
+		return min(prevPow2(n), n-1)
 	}
 	return int(t.Uint64() % uint64(n))
+}
+
+// prevPow2 returns the largest power of two strictly less than n, for
+// n >= 1. It is computed from the bit length rather than by doubling,
+// because doubling past MaxInt/2 overflows to a negative value that
+// stays below n forever: a tape byte of 3 against such a bound used to
+// spin, and the fuzzing engine reports a spin as a crasher, which is a
+// bug in the harness masquerading as one in the system under test.
+func prevPow2(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	return 1 << (bits.Len(uint(n-1)) - 1)
 }
 
 // Bytes returns a slice of length in [0, max], drawn from the tape and
