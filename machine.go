@@ -2,8 +2,10 @@ package fuzztape
 
 import (
 	"crypto/sha256"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -169,6 +171,12 @@ func (m Machine[S]) Fuzz(f *testing.F) {
 // Replaying the corpus here is what keeps the two modes symmetric: a
 // failure found by Run is saved as a seed, and that seed is then
 // checked by go test with no -fuzz flag, not only by the fuzz target.
+//
+// Both paths are relative to the process working directory, which go
+// test sets to the directory of the package under test, so they land
+// in that package's testdata/fuzz/<Name>. A test that changes the
+// working directory, or a Run reached from another package, reads and
+// writes somewhere else.
 func (m Machine[S]) Run(t *testing.T, iters int) {
 	w := m.startWatchdog()
 	defer w.stop()
@@ -218,9 +226,10 @@ func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 		return true
 	}
 	dir := filepath.Join("testdata", "fuzz", m.Name)
-	entries, err := os.ReadDir(dir)
+	entries, err := corpusEntries(dir)
 	if err != nil {
-		return true
+		t.Errorf("fuzztape: %v", err)
+		return false
 	}
 	ok := true
 	for _, e := range entries {
@@ -240,6 +249,20 @@ func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 		}
 	}
 	return ok
+}
+
+// corpusEntries lists the seed files in dir. A missing directory is an
+// empty corpus, which is not an error: a machine need not have one. Every
+// other failure is reported, because it means the seeds that should have
+// replayed did not — a regular file where the directory belongs, say, which
+// go test itself refuses with "not a directory". Silently reporting success
+// there loses the regression the corpus exists to keep.
+func corpusEntries(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return entries, err
 }
 
 // runTape runs one input, inside a synctest bubble if Bubble is set,
