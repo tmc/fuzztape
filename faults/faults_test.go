@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/tmc/fuzztape"
@@ -128,4 +129,141 @@ func TestSleepOpBubble(t *testing.T) {
 		},
 	}
 	m.Run(t, 20)
+}
+
+// shortSink records everything actually written to it, so a test can ask
+// what reached the medium rather than what the caller believed.
+type shortSink struct{ b []byte }
+
+func (s *shortSink) Read([]byte) (int, error) { return 0, io.EOF }
+func (s *shortSink) Write(p []byte) (int, error) {
+	s.b = append(s.b, p...)
+	return len(p), nil
+}
+
+func TestShortWrite(t *testing.T) {
+	errFull := errors.New("no space left on device")
+	for _, tc := range []struct {
+		name    string
+		arm     int
+		armErr  error
+		want    string
+		wantN   int
+		wantErr error
+	}{
+		{"prefix", 3, errFull, "abc", 3, errFull},
+		{"nothing", 0, errFull, "", 0, errFull},
+		{"negative is zero", -5, errFull, "", 0, errFull},
+		{"past the end is a whole write", 99, errFull, "abcde", 5, errFull},
+		{"nil error is a short write error", 3, nil, "abc", 3, io.ErrShortWrite},
+		{"nil error on a whole write is none", 99, nil, "abcde", 5, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &shortSink{}
+			f := &faults.ReadWriter{RW: sink}
+			f.ShortWrite(tc.arm, tc.armErr)
+			n, err := f.Write([]byte("abcde"))
+			if n != tc.wantN || !errors.Is(err, tc.wantErr) {
+				t.Errorf("Write = %d, %v; want %d, %v", n, err, tc.wantN, tc.wantErr)
+			}
+			if string(sink.b) != tc.want {
+				t.Errorf("reached the medium %q, want %q", sink.b, tc.want)
+			}
+			// One-shot: the next write is whole and clean.
+			if n, err := f.Write([]byte("xy")); n != 2 || err != nil {
+				t.Errorf("second Write = %d, %v; want 2, nil", n, err)
+			}
+		})
+	}
+}
+
+// TestShortWriteUnderlyingError checks that an error from the wrapped
+// endpoint wins over the armed one: it is what a real caller would see.
+func TestShortWriteUnderlyingError(t *testing.T) {
+	errReal := errors.New("real")
+	f := &faults.ReadWriter{RW: errWriter{errReal}}
+	f.ShortWrite(3, errors.New("armed"))
+	if _, err := f.Write([]byte("abcde")); !errors.Is(err, errReal) {
+		t.Errorf("Write err = %v, want the underlying %v", err, errReal)
+	}
+}
+
+type errWriter struct{ err error }
+
+func (w errWriter) Read([]byte) (int, error)    { return 0, io.EOF }
+func (w errWriter) Write(p []byte) (int, error) { return 0, w.err }
+
+// TestShortWriteFindsTornRecord is the point of the arm. The log appends
+// length-prefixed records and trusts Write to be all-or-nothing, so a
+// short write leaves a truncated record that reads back as garbage.
+//
+// The control matters as much as the finding: the same machine armed
+// only with the pre-existing faults never reports it. FailWrite writes
+// no bytes, and Drop writes none while reporting that it wrote them all,
+// so neither can leave a partial record on the medium. That is the gap
+// ShortWrite closes.
+func TestShortWriteFindsTornRecord(t *testing.T) {
+	type state struct {
+		f   *faults.ReadWriter
+		log *shortSink
+	}
+	errShort := errors.New("short write")
+	get := func(s *state) *faults.ReadWriter { return s.f }
+	appendOp := fuzztape.Op[*state]{Name: "append", Apply: func(ft *fuzztape.T, s *state) {
+		s.f.Write([]byte{3, 'a', 'b', 'c'}) // length prefix, payload; return values ignored
+	}}
+	machine := func(fault fuzztape.Op[*state]) fuzztape.Machine[*state] {
+		return fuzztape.Machine[*state]{
+			MaxOps: 6,
+			Init: func(ft *fuzztape.T) *state {
+				log := &shortSink{}
+				return &state{f: &faults.ReadWriter{RW: log}, log: log}
+			},
+			Ops: []fuzztape.Op[*state]{appendOp, fault},
+			Check: func(ft *fuzztape.T, s *state) {
+				for b := s.log.b; len(b) > 0; {
+					n := int(b[0])
+					if len(b) < 1+n {
+						ft.Errorf("torn record: %d payload bytes present, want %d", len(b)-1, n)
+						return
+					}
+					b = b[1+n:]
+				}
+			},
+		}
+	}
+
+	// found reports whether m fails on any tape in a fixed sweep. The
+	// tapes come from a seeded PRNG rather than the fuzzing engine, so
+	// this test cannot flake in either direction: the same 2000 tapes
+	// are tried every run.
+	found := func(m fuzztape.Machine[*state]) bool {
+		rng := rand.New(rand.NewPCG(1, 2))
+		tape := make([]byte, 32)
+		for range 2000 {
+			for i := range tape {
+				tape[i] = byte(rng.UintN(256))
+			}
+			if m.Exec(tape).Failure != nil {
+				return true
+			}
+		}
+		return false
+	}
+
+	short := faults.ShortWriteOp("short", get, 4, errShort)
+	if !found(machine(short)) {
+		t.Error("ShortWriteOp did not produce a torn record")
+	}
+	for _, tc := range []struct {
+		name  string
+		fault fuzztape.Op[*state]
+	}{
+		{"FailWrite", faults.FailWriteOp("fail", get, errShort)},
+		{"Drop", faults.DropOp("drop", get, 3)},
+	} {
+		if found(machine(tc.fault)) {
+			t.Errorf("%s reached a torn record; the control is no longer a control", tc.name)
+		}
+	}
 }
