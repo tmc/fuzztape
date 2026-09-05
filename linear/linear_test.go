@@ -70,11 +70,13 @@ func machine(racy bool) fuzztape.Machine[*register] {
 		MaxOps: 24, // the search is exponential in overlapping ops
 		Init: func(t *fuzztape.T) *register {
 			r := &register{history: new(linear.History[call, int]), racy: racy}
-			r.sched = sched.New(t)
-			// Registered before the scheduler's own cleanup, so it runs
-			// after it: the history is checked once every goroutine has
-			// finished, not while some are still in flight.
+			// Registered before sched.New, whose own cleanup settles the
+			// scheduler, so that this one runs after it: cleanups run
+			// last-registered-first, and the history is only meaningful
+			// once every goroutine has finished rather than while some
+			// are still parked.
 			t.Cleanup(func() { linear.Assert(t, r.history, 0, step) })
+			r.sched = sched.New(t)
 			return r
 		},
 		Ops: []fuzztape.Op[*register]{
