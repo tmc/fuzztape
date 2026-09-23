@@ -110,6 +110,8 @@ testing nothing.
   - stats counts how often each op actually runs, turning a machine
     that has silently stopped exercising an operation into a visible
     gap.
+  - tlaplus checks a recorded execution against a TLA+ specification,
+    for contracts that allow more than one correct state.
   - trace turns a failing input into a test you can paste.
 
 Command fuzztape runs every fuzz target in a module, which go test

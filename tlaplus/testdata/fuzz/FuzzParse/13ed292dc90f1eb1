@@ -1,0 +1,2 @@
+go test fuzz v1
+string("----MODULE A----EXTENDS TLC 000A000000 0\nA==SortSeq(<<000>>)====")

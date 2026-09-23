@@ -74,3 +74,10 @@ New:
     partial writes: the prefix reaches the underlying writer and the
     caller sees the short count with an error. This finds torn records
     that dropped or failed writes cannot.
+
+  - Package tlaplus checks a recorded execution against a TLA+
+    specification, in pure Go, as a machine's reference. A Trace
+    carries every state consistent with what the test observed, so a
+    contract with more than one correct answer — the contents a
+    write-ahead log may hold after a crash — is stated in the spec
+    rather than hand-coded as a search over candidates.

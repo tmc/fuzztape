@@ -1,0 +1,2 @@
+go test fuzz v1
+string("----MODULE A----EXTENDS Integers f[A\\in Nat]==f[0]X==f[4]====")

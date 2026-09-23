@@ -1,0 +1,2 @@
+go test fuzz v1
+string("----MODULE A----A 0\nB==[<<000>>EXCEPT!=0]====")

@@ -90,6 +90,10 @@ Each addresses one way a stateful test can pass while testing nothing.
   boundaries, which the byte-level mutator cannot find on its own.
 - `stats` — per-op applied and rejected counts, so a machine that has
   silently stopped exercising an operation says so.
+- `tlaplus` — a recorded execution checked against a TLA+
+  specification, in pure Go. For contracts with a set of correct
+  answers, such as what a log may hold after a crash, stated as the
+  spec's next-state relation instead of a hand-written search.
 - `trace` — a failing input turned into a test you can paste.
 
 ## Command
