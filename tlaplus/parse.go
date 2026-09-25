@@ -169,14 +169,11 @@ func (p *parser) unit(m *module, t token) {
 		m.variables = append(m.variables, p.identList()...)
 	case "CONSTANT", "CONSTANTS":
 		for {
-			name := p.ident().text
-			if p.accept("(") {
-				// An operator constant, C(_, _): record the name only.
-				for !p.accept(")") {
-					p.next()
-				}
+			id := p.ident()
+			if p.peek().text == "(" {
+				p.errorf(id.pos, "operator constant %s is not supported", id.text)
 			}
-			m.constants = append(m.constants, name)
+			m.constants = append(m.constants, id.text)
 			if !p.accept(",") {
 				break
 			}

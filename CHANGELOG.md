@@ -80,4 +80,7 @@ New:
     carries every state consistent with what the test observed, so a
     contract with more than one correct answer — the contents a
     write-ahead log may hold after a crash — is stated in the spec
-    rather than hand-coded as a search over candidates.
+    rather than hand-coded as a search over candidates. Spec.With sets
+    a module's CONSTANTS from Go, as a TLC model does, and ModelValue
+    stands for a TLC model value, so a spec written for TLC runs
+    unchanged.

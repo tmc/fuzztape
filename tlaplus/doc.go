@@ -26,16 +26,28 @@
 // the one that determines it, as TLC also requires.
 //
 // Go values map to TLA+ values as follows: bool to BOOLEAN; any integer
-// type to an integer; string to a string; a slice or array to a
-// sequence; map[K]struct{} to a set; any other map to a function; a
-// struct to a record, keyed by field name. Values printed in errors use
-// TLA+ syntax.
+// type to an integer; string to a string; [ModelValue] to a TLC model
+// value; a slice or array to a sequence; map[K]struct{} to a set; any
+// other map to a function; a struct to a record, keyed by field name.
+// Values printed in errors use TLA+ syntax.
+//
+// A module's CONSTANTS are set from Go with [Spec.With], which plays
+// the part of a TLC model's CONSTANT block:
+//
+//	spec, err = spec.With(map[string]any{
+//		"Clients": map[tlaplus.ModelValue]struct{}{"c1": {}, "c2": {}},
+//		"MaxLen":  3,
+//	})
+//
+// As in TLC, a model value equals itself and no other value, and is in
+// none of the built-in sets such as Nat and STRING.
 //
 // Supported: MODULE, EXTENDS of Naturals, Integers, Sequences,
-// FiniteSets and TLC, VARIABLE(S), ASSUME, operator and function
-// definitions (including RECURSIVE and LOCAL), and expressions over
-// booleans, integers, strings, sets, functions, records and tuples.
-// Not supported: CONSTANT(S), INSTANCE, user-module EXTENDS, temporal
+// FiniteSets and TLC, CONSTANT(S), VARIABLE(S), ASSUME, operator and
+// function definitions (including RECURSIVE and LOCAL), and expressions
+// over booleans, integers, strings, model values, sets, functions,
+// records and tuples. Not supported: operator constants such as
+// CONSTANT F(_), INSTANCE, user-module EXTENDS, temporal
 // operators, ENABLED, LAMBDA, action composition, real numbers, and
 // enumerating infinite sets. A definition outside the subset, such as
 // Spec == Init /\ [][Next]_vars, is an error only if it is used.

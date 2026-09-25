@@ -348,13 +348,19 @@ func (s *Spec) builtinConst(name string) (value, bool) {
 		return newSet([]value{false, true}), true
 	case "STRING":
 		return &lazySet{name: "STRING", member: func(at pos, v value) bool {
-			_, ok := s.kindArg(at, v, "STRING", "").(string)
+			_, ok := s.kindArg(at, v, "STRING", "")
 			return ok
 		}}, true
 	case "Nat":
-		return &lazySet{name: "Nat", member: func(at pos, v value) bool { return s.kindArg(at, v, "Nat", int64(0)).(int64) >= 0 }}, true
+		return &lazySet{name: "Nat", member: func(at pos, v value) bool {
+			n, ok := s.kindArg(at, v, "Nat", int64(0))
+			return ok && n.(int64) >= 0
+		}}, true
 	case "Int":
-		return &lazySet{name: "Int", member: func(at pos, v value) bool { s.kindArg(at, v, "Int", int64(0)); return true }}, true
+		return &lazySet{name: "Int", member: func(at pos, v value) bool {
+			_, ok := s.kindArg(at, v, "Int", int64(0))
+			return ok
+		}}, true
 	}
 	return nil, false
 }
@@ -362,12 +368,16 @@ func (s *Spec) builtinConst(name string) (value, bool) {
 // kindArg returns v, which must be of the same kind as like, for a
 // membership test in the built-in set named set. Like TLC, it treats a
 // test across kinds, such as 1 \in STRING, as an error rather than
-// false.
-func (s *Spec) kindArg(at pos, v value, set string, like value) value {
+// false, except that a model value is simply in none of the sets:
+// kindArg reports false for one.
+func (s *Spec) kindArg(at pos, v value, set string, like value) (value, bool) {
+	if isModelValue(v) {
+		return nil, false
+	}
 	if kind(v) != kind(like) {
 		s.errorf(at, "cannot test whether %s %s is in %s", kindName(v), format(v), set)
 	}
-	return v
+	return v, true
 }
 
 func (s *Spec) boolArg(at pos, v value) bool {

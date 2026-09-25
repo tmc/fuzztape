@@ -12,28 +12,33 @@ type Spec struct {
 	vars     []string
 	varIndex map[string]int
 	defs     map[string]*opDef
+	// constants lists the declared constants, and consts holds their
+	// values once With has set them.
+	constants []string
+	consts    map[string]value
+	assumes   []expr
 	// visible holds the built-in operators the module can see, given
 	// what it extends.
 	visible map[string]bool
 }
 
 // Parse parses the TLA+ module in src. The filename is used only in
-// positions in error messages. Parse also checks the module's ASSUME
-// statements, and reports an error if one is false.
+// positions in error messages. If the module declares no constants,
+// Parse also checks its ASSUME statements, and reports an error if one
+// is false; otherwise [Spec.With] checks them.
 func Parse(filename string, src []byte) (*Spec, error) {
 	m, err := parseModule(filename, src)
 	if err != nil {
 		return nil, err
 	}
 	s := &Spec{
-		file:     filename,
-		vars:     m.variables,
-		varIndex: make(map[string]int),
-		defs:     make(map[string]*opDef),
-		visible:  make(map[string]bool),
-	}
-	if len(m.constants) > 0 {
-		return nil, fmt.Errorf("%s: CONSTANT %s: constants are not supported; define it with ==", filename, m.constants[0])
+		file:      filename,
+		vars:      m.variables,
+		varIndex:  make(map[string]int),
+		defs:      make(map[string]*opDef),
+		constants: m.constants,
+		assumes:   m.assumes,
+		visible:   make(map[string]bool),
 	}
 	for _, name := range core {
 		s.visible[name] = true
@@ -65,21 +70,75 @@ func Parse(filename string, src []byte) (*Spec, error) {
 		}
 		s.varIndex[v] = i
 	}
+	declared := make(map[string]bool)
+	for _, c := range m.constants {
+		if _, ok := s.varIndex[c]; ok {
+			return nil, fmt.Errorf("%s: constant %s is already a variable", filename, c)
+		}
+		if declared[c] {
+			return nil, fmt.Errorf("%s: constant %s declared twice", filename, c)
+		}
+		declared[c] = true
+	}
 	for _, d := range m.defs {
 		if _, ok := s.varIndex[d.name]; ok {
 			return nil, &posError{file: filename, pos: d.p, msg: fmt.Sprintf("%s is already a variable", d.name)}
+		}
+		if declared[d.name] {
+			return nil, &posError{file: filename, pos: d.p, msg: fmt.Sprintf("%s is already a constant", d.name)}
 		}
 		if _, ok := s.defs[d.name]; ok {
 			return nil, &posError{file: filename, pos: d.p, msg: fmt.Sprintf("%s defined twice", d.name)}
 		}
 		s.defs[d.name] = d
 	}
-	for _, a := range m.assumes {
-		if err := s.assume(a); err != nil {
+	if len(s.constants) == 0 {
+		if err := s.checkAssumes(); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
+}
+
+// With returns a copy of s with its constants set to the values in
+// constants, keyed by name, as a TLC model's CONSTANT block or an
+// INSTANCE ... WITH sets them. It must give a value to every constant
+// the module declares, and to nothing else. Values are converted as for
+// a [State]; a [ModelValue] stands for a TLC model value. With checks the
+// module's ASSUME statements under the new values.
+func (s *Spec) With(constants map[string]any) (*Spec, error) {
+	consts := make(map[string]value, len(s.constants))
+	for _, c := range s.constants {
+		x, ok := constants[c]
+		if !ok {
+			return nil, fmt.Errorf("%s: constant %s has no value", s.file, c)
+		}
+		v, err := fromGo(x)
+		if err != nil {
+			return nil, fmt.Errorf("%s: constant %s: %w", s.file, c, err)
+		}
+		consts[c] = v
+	}
+	for name := range constants {
+		if _, ok := consts[name]; !ok {
+			return nil, fmt.Errorf("%s: no constant %s", s.file, name)
+		}
+	}
+	t := *s
+	t.consts = consts
+	if err := t.checkAssumes(); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (s *Spec) checkAssumes() error {
+	for _, a := range s.assumes {
+		if err := s.assume(a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Spec) assume(a expr) (err error) {
@@ -127,6 +186,9 @@ const maxFrontier = 1 << 16
 func (s *Spec) Start(init string, obs State) (*Trace, error) {
 	if init == "" {
 		init = "Init"
+	}
+	if len(s.consts) < len(s.constants) {
+		return nil, fmt.Errorf("%s: constant %s has no value; set it with With", s.file, s.constants[0])
 	}
 	d, err := s.action(init, 0)
 	if err != nil {

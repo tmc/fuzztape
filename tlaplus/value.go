@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// A value is a TLA+ value: bool, int64, string, *setValue, *fcnValue,
-// or one of the lazy forms below (*lazySet, *lazyFcn, *opValue).
+// A value is a TLA+ value: bool, int64, string, ModelValue, *setValue,
+// *fcnValue, or one of the lazy forms below (*lazySet, *lazyFcn, *opValue).
 //
 // Sequences, tuples and records are functions, as they are in TLA+:
 // <<a, b>> is the function with domain 1..2, and [x |-> 1] the function
@@ -55,6 +55,19 @@ type opValue struct {
 	name  string
 	arity int
 	call  func(at pos, args []value) value
+}
+
+// A ModelValue is a TLC model value: an uninterpreted value, written as
+// its bare name, that equals itself and no other value. A model's
+// CONSTANT block uses them for sets whose elements matter only by
+// identity, such as Nodes = {n1, n2, n3}. A ModelValue may appear in the
+// constants given to [Spec.With], in a [State], and in an action's
+// arguments. Its name must be a TLA+ identifier.
+type ModelValue string
+
+func isModelValue(v value) bool {
+	_, ok := v.(ModelValue)
+	return ok
 }
 
 var emptySet = &setValue{}
@@ -161,8 +174,10 @@ func kind(v value) int {
 		return 3
 	case *fcnValue, *lazyFcn:
 		return 4
+	case ModelValue:
+		return 5
 	}
-	return 5
+	return 6
 }
 
 func kindName(v value) string {
@@ -185,6 +200,8 @@ func kindName(v value) string {
 		return "function"
 	case *lazyFcn:
 		return "function"
+	case ModelValue:
+		return "model value"
 	case *opValue:
 		return "operator"
 	}
@@ -215,6 +232,8 @@ func compare(a, b value) int {
 		return cmp.Compare(a, b.(int64))
 	case string:
 		return strings.Compare(a, b.(string))
+	case ModelValue:
+		return strings.Compare(string(a), string(b.(ModelValue)))
 	case *setValue:
 		b := b.(*setValue)
 		if c := cmp.Compare(len(a.elems), len(b.elems)); c != 0 {
@@ -265,6 +284,8 @@ func writeValue(b *strings.Builder, v value) {
 		b.WriteString(strconv.FormatInt(v, 10))
 	case string:
 		writeString(b, v)
+	case ModelValue:
+		b.WriteString(string(v))
 	case *setValue:
 		b.WriteByte('{')
 		for i, e := range v.elems {
@@ -353,13 +374,40 @@ func fromGo(x any) (value, error) {
 // maxGoDepth bounds the nesting of a Go value, which may be cyclic.
 const maxGoDepth = 100
 
-var emptyStruct = reflect.TypeFor[struct{}]()
+var (
+	emptyStruct    = reflect.TypeFor[struct{}]()
+	modelValueType = reflect.TypeFor[ModelValue]()
+)
+
+// isModelName reports whether s is a TLA+ identifier that is not a
+// reserved word: at least one letter among letters, digits and
+// underscores.
+func isModelName(s string) bool {
+	letter := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !isIdentByte(c) {
+			return false
+		}
+		if !isDigit(c) && c != '_' {
+			letter = true
+		}
+	}
+	return letter && !keywords[s]
+}
 
 func fromReflect(rv reflect.Value, depth int) (value, error) {
 	if depth > maxGoDepth {
 		return nil, fmt.Errorf("value nested more than %d deep", maxGoDepth)
 	}
 	depth++
+	if rv.Type() == modelValueType {
+		name := rv.String()
+		if !isModelName(name) {
+			return nil, fmt.Errorf("model value %q is not an identifier", name)
+		}
+		return ModelValue(name), nil
+	}
 	switch rv.Kind() {
 	case reflect.Bool:
 		return rv.Bool(), nil

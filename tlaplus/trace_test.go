@@ -217,7 +217,10 @@ func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name, src, want string
 	}{
-		{"constant", "---- MODULE M ----\nCONSTANT N\n====", "constants are not supported"},
+		{"operator constant", "---- MODULE M ----\nCONSTANT F(_)\n====", "M.tla:2:10: operator constant F is not supported"},
+		{"constant twice", "---- MODULE M ----\nCONSTANTS N, N\n====", "M.tla: constant N declared twice"},
+		{"constant and variable", "---- MODULE M ----\nCONSTANT N\nVARIABLE N\n====", "M.tla: constant N is already a variable"},
+		{"constant and definition", "---- MODULE M ----\nCONSTANT N\nN == 1\n====", "M.tla:3:1: N is already a constant"},
 		{"extends", "---- MODULE M ----\nEXTENDS Foo\n====", "EXTENDS Foo"},
 		{"instance", "---- MODULE M ----\nINSTANCE Foo\n====", "M.tla:2:1: INSTANCE is not supported"},
 		{"assume", "---- MODULE M ----\nEXTENDS Naturals\nASSUME 1 + 1 = 3\n====", "M.tla:3:8: assumption is false: 1 + 1 = 3"},

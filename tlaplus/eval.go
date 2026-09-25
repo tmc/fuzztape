@@ -291,6 +291,9 @@ func (s *Spec) evalIdent(e *identExpr, c *ctx) value {
 	if i, ok := s.varIndex[e.name]; ok {
 		return s.varValue(e, i, c)
 	}
+	if v, ok := s.consts[e.name]; ok {
+		return v
+	}
 	if d, ok := s.defs[e.name]; ok {
 		return s.callDef(e.p, d, nil, c.with(nil))
 	}
@@ -515,6 +518,9 @@ func (s *Spec) except(f value, path []exceptPath, val expr, c *ctx) value {
 func (s *Spec) equal(at pos, a, b value) bool {
 	a, b = s.force(at, a), s.force(at, b)
 	if kind(a) != kind(b) {
+		if isModelValue(a) || isModelValue(b) {
+			return false
+		}
 		s.errorf(at, "cannot compare %s %s with %s %s", kindName(a), format(a), kindName(b), format(b))
 	}
 	return compare(a, b) == 0
@@ -563,6 +569,9 @@ func (s *Spec) member(at pos, v, set value) bool {
 		v = s.force(at, v)
 		for _, e := range set.elems {
 			if kind(e) != kind(v) {
+				if isModelValue(e) || isModelValue(v) {
+					continue
+				}
 				// TLC refuses the comparison, as equal does.
 				s.errorf(at, "cannot test whether %s %s is in a set of %ss", kindName(v), format(v), kindName(e))
 			}
