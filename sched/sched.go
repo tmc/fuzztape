@@ -61,15 +61,19 @@ const LabelKey = "fuzztape.sched"
 type Scheduler struct {
 	t *fuzztape.T
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// parked is kept sorted by id, so the index the tape draws in Step
+	// names the same goroutine however the runtime ordered the parks.
 	parked  []parked
 	pending int // started by Go, not yet at its first park
-	spawned int // total started by Go, used to number labels
+	spawned int // total started by Go; the last id handed out
+	running int // id of the goroutine Step released most recently
 	order   []string
 }
 
 // parked is a goroutine waiting for the scheduler to release it.
 type parked struct {
+	id   int // spawn order, from 1
 	name string
 	ch   chan struct{}
 }
@@ -106,11 +110,12 @@ func (s *Scheduler) Go(name string, f func()) {
 	s.mu.Lock()
 	s.pending++
 	s.spawned++
-	label := fmt.Sprintf("%s#%d", name, s.spawned)
+	id := s.spawned
 	s.mu.Unlock()
+	label := fmt.Sprintf("%s#%d", name, id)
 	go func() {
 		pprof.SetGoroutineLabels(pprof.WithLabels(context.Background(), pprof.Labels(LabelKey, label)))
-		s.park(name, true)
+		s.park(id, name, true)
 		f()
 	}()
 }
@@ -121,24 +126,50 @@ func (s *Scheduler) Go(name string, f func()) {
 // gap between a read and the write that depends on it, before and
 // after a lock is released, at every send and receive worth
 // interleaving.
-func (s *Scheduler) Yield() { s.park("yield", false) }
+//
+// Call Yield only from a goroutine started by [Scheduler.Go]. The
+// scheduler identifies the caller as the goroutine it released last,
+// which is exact as long as scheduled goroutines interact only through
+// the scheduler. One that another scheduled goroutine wakes directly —
+// by a channel send, say — runs concurrently with it, which no
+// scheduler built on scheduling points can order.
+func (s *Scheduler) Yield() {
+	s.mu.Lock()
+	id := s.running
+	s.mu.Unlock()
+	s.park(id, "yield", false)
+}
 
 // park adds the calling goroutine to the parked set and blocks it.
 // initial distinguishes the first park of a goroutine started by Go,
 // which settles the pending count, from a later Yield.
-func (s *Scheduler) park(name string, initial bool) {
+//
+// The set is ordered by id, not by arrival. Goroutines that park in
+// the same quiescent interval — several started by one op, say — race
+// each other to this lock, so arrival order differs from run to run,
+// and a tape that picked by arrival would release a different
+// goroutine for the same byte. Ids are assigned by Go, which runs on
+// the op goroutine or on the one scheduled goroutine running, so they
+// are the same for the same input every time.
+func (s *Scheduler) park(id int, name string, initial bool) {
 	ch := make(chan struct{})
 	s.mu.Lock()
 	if initial {
 		s.pending--
 	}
-	s.parked = append(s.parked, parked{name, ch})
+	i := slices.IndexFunc(s.parked, func(p parked) bool { return p.id > id })
+	if i < 0 {
+		i = len(s.parked)
+	}
+	s.parked = slices.Insert(s.parked, i, parked{id, name, ch})
 	s.mu.Unlock()
 	<-ch
 }
 
 // Step releases one parked goroutine, chosen by the tape, and reports
-// whether there was one to release. It must be called from the op
+// whether there was one to release. The tape's draw indexes the parked
+// goroutines in the order [Scheduler.Go] started them, so an input
+// selects the same goroutine on every run. It must be called from the op
 // goroutine — that is, from an [fuzztape.Op] Apply — and never from a
 // scheduled goroutine.
 //
@@ -171,6 +202,7 @@ func (s *Scheduler) Step() bool {
 	i := s.t.IntN(len(s.parked))
 	p := s.parked[i]
 	s.parked = slices.Delete(s.parked, i, i+1)
+	s.running = p.id
 	s.order = append(s.order, p.name)
 	s.mu.Unlock()
 
@@ -190,7 +222,7 @@ func (s *Scheduler) Step() bool {
 // The drain it runs from [New]'s cleanup is deterministic even though
 // its choices come from the tape, which by then is usually exhausted: a
 // spent tape decodes every IntN to 0, so the remaining goroutines are
-// released in park order. Nothing depends on that, but it is worth
+// released in the order Go started them. Nothing depends on that, but it is worth
 // knowing that the tail of a sequence is not making random choices with
 // bytes that were never in the input.
 func (s *Scheduler) Settle() {

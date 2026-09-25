@@ -1,6 +1,7 @@
 package sched_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -208,6 +209,55 @@ func TestScheduleIsDeterministic(t *testing.T) {
 	}
 	if schedules[0] == "" {
 		t.Fatal("no goroutine was ever scheduled; the test proves nothing")
+	}
+}
+
+// TestSpawnOrderIsReproducible is the regression test for choosing by
+// arrival. Goroutines started together park together, in whatever order
+// the runtime lets them reach the scheduler's lock, and a tape that
+// indexed them by arrival released a different one for the same byte:
+// the empty input below once produced 58 distinct orders in 100 runs.
+// Every fresh bubble must now produce the same one.
+func TestSpawnOrderIsReproducible(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{"drain", nil},
+		{"steps", []byte{0, 7, 0, 3, 0, 11, 0, 5, 0, 200, 0, 1, 0, 9, 0, 4, 0, 250, 0, 6, 0, 2, 0, 8}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen := map[string]int{}
+			for range 100 {
+				var ran []string
+				m := fuzztape.Machine[*sched.Scheduler]{
+					Bubble: true,
+					Init: func(ft *fuzztape.T) *sched.Scheduler {
+						s := sched.New(ft)
+						for i := range 12 {
+							s.Go("g", func() {
+								ran = append(ran, fmt.Sprint(i))
+								s.Yield()
+								ran = append(ran, fmt.Sprint(i, "'"))
+							})
+						}
+						return s
+					},
+					Ops: []fuzztape.Op[*sched.Scheduler]{
+						sched.StepOp("step", func(s *sched.Scheduler) *sched.Scheduler { return s }),
+					},
+				}
+				m.Replay(t, tt.input)
+				if len(ran) != 24 {
+					t.Fatalf("%d of 24 steps ran", len(ran))
+				}
+				seen[strings.Join(ran, " ")]++
+			}
+			if len(seen) != 1 {
+				t.Errorf("one input produced %d orders in 100 runs, want 1: %v", len(seen), seen)
+			}
+		})
 	}
 }
 

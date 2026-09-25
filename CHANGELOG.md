@@ -23,6 +23,17 @@ Behavior changes:
     unrelated bug the fuzzer never found. A panic's site is the line
     that raised it.
 
+  - sched.Scheduler.Step indexes the parked goroutines in the order
+    Go started them rather than the order they reached the scheduler.
+    Goroutines that park in the same quiescent interval race to the
+    scheduler, so the old order varied from run to run: one input
+    replayed in 100 fresh bubbles produced over 50 different
+    schedules. Schedules now reproduce. Corpus files stay valid, but
+    an input whose parked set was ever in a different order from
+    spawn order — any schedule after a Yield — may now release a
+    different goroutine for the same byte, as may the end-of-sequence
+    drain, which now releases in spawn order.
+
   - IntRange panics when hi-lo+1 overflows int instead of silently
     returning values outside [lo, hi].
 
