@@ -34,6 +34,10 @@ Behavior changes:
     different goroutine for the same byte, as may the end-of-sequence
     drain, which now releases in spawn order.
 
+  - trace.Repro keeps each line of a multi-line op inside the comment.
+    An op whose text held a newline, such as a panic value, used to
+    produce a file that did not compile.
+
   - IntRange panics when hi-lo+1 overflows int instead of silently
     returning values outside [lo, hi].
 

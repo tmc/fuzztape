@@ -131,3 +131,19 @@ func write(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestReproMultilineOp covers an op whose text spans lines, as a panic
+// value or a rejection reason can. Every line must stay inside the
+// comment, or the generated file does not compile.
+func TestReproMultilineOp(t *testing.T) {
+	ops := []string{"inc", "dec (panicked: first\nsecond\r\nthird)", "inc (rejected: \r)"}
+	src := trace.File("p", "TestX", "m", []byte{1}, ops)
+	if _, err := parser.ParseFile(token.NewFileSet(), "x_test.go", src, parser.AllErrors); err != nil {
+		t.Fatalf("generated source does not parse: %v\n%s", err, src)
+	}
+	for _, want := range []string{"//\tdec (panicked: first\n", "//\t\tsecond\n", "//\t\tthird)\n"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated source missing %q:\n%s", want, src)
+		}
+	}
+}

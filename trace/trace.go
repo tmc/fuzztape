@@ -38,7 +38,16 @@ func Repro(testName, machineExpr string, data []byte, ops []string) string {
 	} else {
 		fmt.Fprintf(&b, "\t// %d bytes, decoding to %d ops:\n", len(data), len(ops))
 		for _, op := range ops {
-			fmt.Fprintf(&b, "\t//\t%s\n", op)
+			// An op line can span several lines — a panic value or a
+			// rejection reason with a newline in it — and each needs
+			// its own comment marker, or the rest is parsed as code.
+			for i, line := range strings.Split(strings.ReplaceAll(op, "\r\n", "\n"), "\n") {
+				indent := "\t"
+				if i > 0 {
+					indent = "\t\t"
+				}
+				fmt.Fprintf(&b, "\t//%s%s\n", indent, strings.TrimRight(line, "\r"))
+			}
 		}
 	}
 	fmt.Fprintf(&b, "\tdata := []byte(%q)\n", data)
