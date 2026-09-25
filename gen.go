@@ -263,3 +263,114 @@ func Duration(lo, hi time.Duration) Gen[time.Duration] {
 		return lo + time.Duration(t.IntN(int(span)+1))
 	}
 }
+
+// Int8 returns a generator of int8 values skewed toward the boundaries
+// of fixed-width arithmetic. It draws as [Int64] does, at 8 bits.
+func Int8() Gen[int8] {
+	return func(t *Tape) int8 { return int8(fixed(t, 8, true)) }
+}
+
+// Int16 returns a generator of int16 values skewed toward the boundaries
+// of fixed-width arithmetic. It draws as [Int64] does, at 16 bits.
+func Int16() Gen[int16] {
+	return func(t *Tape) int16 { return int16(fixed(t, 16, true)) }
+}
+
+// Int32 returns a generator of int32 values skewed toward the boundaries
+// of fixed-width arithmetic. It draws as [Int64] does, at 32 bits.
+func Int32() Gen[int32] {
+	return func(t *Tape) int32 { return int32(fixed(t, 32, true)) }
+}
+
+// Int64 returns a generator of int64 values skewed toward the boundaries
+// of fixed-width arithmetic: 0, ±1, [math.MinInt64] and [math.MaxInt64]
+// and their inner neighbors, the bit width and its neighbors (63, 64,
+// 65 — the shift counts where languages disagree), and powers of two,
+// positive and negative, with their ±1 neighbors. A zero tape yields 0.
+//
+// One selector byte decides, in sixteen buckets of 16 values. Five
+// buckets in eight hold a boundary: 0, 1, -1 (two buckets), MinInt64
+// (two buckets), MaxInt64, MinInt64+1 or MaxInt64-1, the width family,
+// and the powers of two, which read one more byte for the exponent.
+// The other six hold a uniform value, read from the next 8 bytes
+// little-endian. -1 and MinInt64 get double weight because the one
+// division that overflows needs both at once: the ordered pair
+// (MinInt64, -1) comes up about once in 64 pairs.
+//
+// The fixed-width generators consume only their own bytes, so adding
+// them changed how no other generator decodes.
+func Int64() Gen[int64] {
+	return func(t *Tape) int64 { return int64(fixed(t, 64, true)) }
+}
+
+// Uint8 returns a generator of uint8 values skewed toward the boundaries
+// of fixed-width arithmetic. It draws as [Uint64] does, at 8 bits.
+func Uint8() Gen[uint8] {
+	return func(t *Tape) uint8 { return uint8(fixed(t, 8, false)) }
+}
+
+// Uint16 returns a generator of uint16 values skewed toward the
+// boundaries of fixed-width arithmetic. It draws as [Uint64] does, at
+// 16 bits.
+func Uint16() Gen[uint16] {
+	return func(t *Tape) uint16 { return uint16(fixed(t, 16, false)) }
+}
+
+// Uint32 returns a generator of uint32 values skewed toward the
+// boundaries of fixed-width arithmetic. It draws as [Uint64] does, at
+// 32 bits.
+func Uint32() Gen[uint32] {
+	return func(t *Tape) uint32 { return uint32(fixed(t, 32, false)) }
+}
+
+// Uint64 returns a generator of uint64 values skewed as [Int64] is,
+// toward 0, 1, [math.MaxUint64] and its neighbor, the signed boundaries
+// 1<<63 and 1<<63-1, the bit width and its neighbors, and powers of two
+// with their ±1 neighbors. A zero tape yields 0. It is distinct from
+// [Tape.Uint64], which reads 8 bytes with no skew.
+func Uint64() Gen[uint64] {
+	return func(t *Tape) uint64 { return fixed(t, 64, false) }
+}
+
+// fixed draws the bit pattern of a bits-wide integer, as documented at
+// [Int64]. The result is masked to bits, so converting it to the
+// signed or unsigned type of that width yields the intended value.
+func fixed(t *Tape, bits int, signed bool) uint64 {
+	mask := uint64(math.MaxUint64) >> (64 - bits)
+	top := uint64(1) << (bits - 1) // MinInt's pattern
+	b := t.Byte()
+	v := b & 15 // chooses within a bucket
+	var u uint64
+	switch b >> 4 {
+	case 0:
+		u = 0
+	case 1:
+		u = 1
+	case 2, 3:
+		u = mask // -1, or MaxUint
+	case 4, 5:
+		u = top // MinInt, or MaxInt+1
+	case 6:
+		u = top - 1 // MaxInt
+	case 7:
+		if signed {
+			u = []uint64{top + 1, top - 2}[v%2] // MinInt+1, MaxInt-1
+		} else {
+			u = []uint64{mask - 1, 2}[v%2]
+		}
+	case 8:
+		u = uint64(bits) - 1 + uint64(v%3) // width-1, width, width+1
+	case 9:
+		p := uint64(1) << (t.Byte() % byte(bits))
+		n := 3
+		if signed {
+			n = 6
+		}
+		u = []uint64{p, p - 1, p + 1, -p, -p + 1, -p - 1}[int(v)%n]
+	default:
+		for i := range bits / 8 {
+			u |= uint64(t.Byte()) << (8 * i)
+		}
+	}
+	return u & mask
+}

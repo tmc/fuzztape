@@ -59,6 +59,28 @@ func ExampleFloat64() {
 	// NaN
 }
 
+// Int64 skews toward the boundaries of fixed-width arithmetic. A
+// selector byte of 0x40 draws MinInt64 and 0x20 draws -1: together,
+// the one division that overflows.
+func ExampleInt64() {
+	g := fuzztape.Int64()
+	tape := fuzztape.New([]byte{0x40, 0x20})
+	x, y := g(tape), g(tape)
+	fmt.Println(x, y, x/y)
+	// Output:
+	// -9223372036854775808 -1 -9223372036854775808
+}
+
+// Uint64 draws the bit width itself as a boundary: a shift count of 64
+// is where Go yields 0 and C is undefined.
+func ExampleUint64() {
+	g := fuzztape.Uint64()
+	n := g(fuzztape.New([]byte{0x81}))
+	fmt.Println(n, uint64(1)<<n)
+	// Output:
+	// 64 0
+}
+
 // An op can draw its parameter through a generator, which keeps the
 // value typed and lets the same draw drive a reference implementation.
 func ExampleNewOp() {

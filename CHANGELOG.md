@@ -39,6 +39,15 @@ New:
     Fuzz and Trace, so an input names the same sequence under each.
     NewRecordedOp records an op's drawn argument in its Record.
 
+  - Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32 and Uint64 are
+    generators of fixed-width integers skewed toward the boundaries of
+    fixed-width arithmetic: 0, ±1, MinInt, MaxInt and their inner
+    neighbors, the bit width and its neighbors, and powers of two with
+    their ±1 neighbors. In 1,000 draws from random bytes they produce
+    both MinInt64 followed by -1 and a Uint64 shift count of 64. They
+    are new functions reading their own bytes; no existing generator
+    decodes differently.
+
   - faults.ShortWriteOp and (*faults.ReadWriter).ShortWrite inject
     partial writes: the prefix reaches the underlying writer and the
     caller sees the short count with an error. This finds torn records

@@ -20,7 +20,9 @@ truncates the decoded behavior.
 [Tape.IntN] deliberately skews toward boundary values — 0, 1, n-1, and
 powers of two — because most bugs live at boundaries and uniform random
 bytes rarely land there. [Float64] and [StringUTF8] skew the same way,
-toward NaN and the infinities, toward the UTF-8 encoding boundaries.
+toward NaN and the infinities, toward the UTF-8 encoding boundaries,
+and [Int64] and its fixed-width siblings toward MinInt, -1, the bit
+width, and powers of two.
 
 # Generators
 
