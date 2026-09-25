@@ -96,6 +96,9 @@ testing nothing.
     no longer decode to a distinct op sequence.
   - faults injects tape-driven I/O faults, so a shrunk input names the
     single fault that breaks an invariant.
+  - history writes a [Machine.Exec] history as NDJSON for TLA+ trace
+    validation, ending with a marker that makes a truncated trace
+    detectable, and reads one back.
   - linear checks that a concurrent history is linearizable, for the
     overlapping operations a per-op comparison cannot judge.
   - model checks a system under test against a reference implementation

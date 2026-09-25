@@ -74,6 +74,9 @@ Each addresses one way a stateful test can pass while testing nothing.
   longer decode to a distinct op sequence.
 - `faults` — tape-driven fault injection: one-shot read and write
   errors, dropped writes, and sleeps that advance virtual time.
+- `history` — a `Machine.Exec` history written as NDJSON for TLA+
+  trace validation, with an end marker declaring the event count, so a
+  truncated trace is rejected instead of validating as a shorter run.
 - `linear` — linearizability checking for overlapping operations, where
   no single answer is the right one and only the existence of *some*
   valid order settles correctness.

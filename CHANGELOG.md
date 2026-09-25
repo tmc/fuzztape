@@ -63,6 +63,13 @@ New:
     are new functions reading their own bytes; no existing generator
     decodes differently.
 
+  - Package history writes a Result's records as newline-delimited
+    JSON for TLA+ trace validation — one event per record with a
+    sequence number, op name, rendered args and outcome, then an end
+    marker with the event count and per-op counts — and reads one
+    back, rejecting a history that is truncated, has lost or
+    reordered an event, or disagrees with its end marker.
+
   - faults.ShortWriteOp and (*faults.ReadWriter).ShortWrite inject
     partial writes: the prefix reaches the underlying writer and the
     caller sees the short count with an error. This finds torn records
