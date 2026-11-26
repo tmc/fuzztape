@@ -83,6 +83,7 @@ Each addresses one way a stateful test can pass while testing nothing.
 - `model` — comparison against a reference implementation, or against a
   second real one. Catches the wrong answer that leaves a plausible
   state, which no invariant can see.
+- `repro` — a failing input turned into a test you can paste.
 - `sched` — goroutine interleaving as a tape decision, so a race
   reproduces exactly from its corpus file and shrinks to the shortest
   schedule that triggers it.
@@ -94,7 +95,6 @@ Each addresses one way a stateful test can pass while testing nothing.
   specification, in pure Go. For contracts with a set of correct
   answers, such as what a log may hold after a crash, stated as the
   spec's next-state relation instead of a hand-written search.
-- `trace` — a failing input turned into a test you can paste.
 
 ## Command
 

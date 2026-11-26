@@ -103,6 +103,7 @@ testing nothing.
     overlapping operations a per-op comparison cannot judge.
   - model checks a system under test against a reference implementation
     or a second real one, comparing results and not only state.
+  - repro turns a failing input into a test you can paste.
   - sched makes goroutine interleaving a tape decision, so a race
     reproduces from its corpus file and shrinks.
   - splice builds seeds by crossing corpus inputs at the operation
@@ -112,7 +113,6 @@ testing nothing.
     gap.
   - tlaplus checks a recorded execution against a TLA+ specification,
     for contracts that allow more than one correct state.
-  - trace turns a failing input into a test you can paste.
 
 Command fuzztape runs every fuzz target in a module, which go test
 cannot: -fuzz takes one target in one package per invocation.

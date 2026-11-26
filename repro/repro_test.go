@@ -1,4 +1,4 @@
-package trace_test
+package repro_test
 
 import (
 	"go/parser"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/tmc/fuzztape"
-	"github.com/tmc/fuzztape/trace"
+	"github.com/tmc/fuzztape/repro"
 )
 
 type counter struct{ n int }
@@ -30,7 +30,7 @@ func TestReproParses(t *testing.T) {
 	if len(ops) == 0 {
 		t.Fatal("machine decoded no ops; the test would prove nothing")
 	}
-	src := trace.File("mypkg", "TestQueueRepro", "machine", data, ops)
+	src := repro.File("mypkg", "TestQueueRepro", "machine", data, ops)
 
 	if _, err := parser.ParseFile(token.NewFileSet(), "repro_test.go", src, parser.AllErrors); err != nil {
 		t.Fatalf("generated source does not parse: %v\n%s", err, src)
@@ -52,14 +52,14 @@ func TestReproParses(t *testing.T) {
 // generator: quotes, backslashes, newlines, and non-UTF-8.
 func TestReproEscapesData(t *testing.T) {
 	data := []byte{0x00, '"', '\\', '\n', 0xff, 0xfe, '`'}
-	src := trace.File("p", "TestX", "m", data, nil)
+	src := repro.File("p", "TestX", "m", data, nil)
 	if _, err := parser.ParseFile(token.NewFileSet(), "x_test.go", src, parser.AllErrors); err != nil {
 		t.Fatalf("generated source does not parse: %v\n%s", err, src)
 	}
 }
 
 func TestReproNoOps(t *testing.T) {
-	src := trace.Repro("TestX", "m", nil, nil)
+	src := repro.Repro("TestX", "m", nil, nil)
 	if !strings.Contains(src, "no ops") {
 		t.Errorf("empty trace not described:\n%s", src)
 	}
@@ -107,7 +107,7 @@ var machine = fuzztape.Machine[*counter]{
 	},
 }
 `)
-	write(t, filepath.Join(dir, "repro_test.go"), trace.File("repro", "TestRepro", "machine", data, ops))
+	write(t, filepath.Join(dir, "repro_test.go"), repro.File("repro", "TestRepro", "machine", data, ops))
 
 	cmd := exec.Command(goTool, "test", "./...")
 	cmd.Dir = dir
@@ -122,7 +122,7 @@ func moduleRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Dir(dir), nil // the trace package sits one level down
+	return filepath.Dir(dir), nil // the repro package sits one level down
 }
 
 func write(t *testing.T, path, content string) {
@@ -137,7 +137,7 @@ func write(t *testing.T, path, content string) {
 // comment, or the generated file does not compile.
 func TestReproMultilineOp(t *testing.T) {
 	ops := []string{"inc", "dec (panicked: first\nsecond\r\nthird)", "inc (rejected: \r)"}
-	src := trace.File("p", "TestX", "m", []byte{1}, ops)
+	src := repro.File("p", "TestX", "m", []byte{1}, ops)
 	if _, err := parser.ParseFile(token.NewFileSet(), "x_test.go", src, parser.AllErrors); err != nil {
 		t.Fatalf("generated source does not parse: %v\n%s", err, src)
 	}
@@ -148,11 +148,11 @@ func TestReproMultilineOp(t *testing.T) {
 	}
 }
 
-func TestWrite(t *testing.T) {
+func TestWriteFile(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "good_test.go")
-	if err := trace.Write(good, "p", "TestGood", "m", []byte{1}, []string{"inc"}); err != nil {
-		t.Fatalf("Write valid: %v", err)
+	if err := repro.WriteFile(good, "p", "TestGood", "m", []byte{1}, []string{"inc"}); err != nil {
+		t.Fatalf("WriteFile valid: %v", err)
 	}
 	b, err := os.ReadFile(good)
 	if err != nil {
@@ -163,10 +163,10 @@ func TestWrite(t *testing.T) {
 	}
 
 	bad := filepath.Join(dir, "bad_test.go")
-	if err := trace.Write(bad, "p", "not a valid func", "m", []byte{1}, nil); err == nil {
-		t.Fatal("Write accepted invalid Go identifier")
+	if err := repro.WriteFile(bad, "p", "not a valid func", "m", []byte{1}, nil); err == nil {
+		t.Fatal("WriteFile accepted invalid Go identifier")
 	}
 	if _, err := os.Stat(bad); !os.IsNotExist(err) {
-		t.Errorf("Write created %s on format error (stat err: %v)", bad, err)
+		t.Errorf("WriteFile created %s on format error (stat err: %v)", bad, err)
 	}
 }
