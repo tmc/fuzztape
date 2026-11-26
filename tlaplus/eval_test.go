@@ -114,6 +114,15 @@ var evalTests = []struct {
 	{"string concat", "", `"ab" \o "c"`, `"abc"`},
 	{"minus one power", "", "<<(-1)^3, (-1)^4, (-1)^0>>", "<<-1, 1, 1>>"},
 	{"large interval member", "", `5 \in 1..2000000 /\ 0 \notin 1..2000000`, "TRUE"},
+	{"isfinite large interval", "", `IsFiniteSet(1..2000000)`, "TRUE"},
+	{"isfinite subset nat", "", `IsFiniteSet(SUBSET Nat)`, "FALSE"},
+	{"isfinite subset large interval", "", `IsFiniteSet(SUBSET (1..2000000))`, "TRUE"},
+	{"isfinite fcnset nat", "", `IsFiniteSet([Nat -> {1}])`, "FALSE"},
+	{"isfinite recordset nat", "", `IsFiniteSet([a : Nat])`, "FALSE"},
+	{"isfinite product nat", "", `IsFiniteSet(Nat \X {1})`, "FALSE"},
+	{"isfinite seq empty", "", `IsFiniteSet(Seq({})) /\ ~IsFiniteSet(Seq({1}))`, "TRUE"},
+	{"fcnset empty codom", "", `[{1} -> {}]`, "{}"},
+	{"fcnset empty both", "", `[{} -> {}]`, "{<<>>}"},
 }
 
 func TestEval(t *testing.T) {
@@ -153,6 +162,8 @@ var evalErrorTests = []struct {
 	{"member across kinds", "", `1 \in STRING`, "cannot test whether integer 1 is in STRING"},
 	{"member across kinds finite", "", `1 \in {"a"}`, "cannot test whether integer 1 is in a set of strings"},
 	{"large interval", "", `{x \in 1..2000000 : x < 3}`, "cannot enumerate 1..2000000: more than 1048576 elements"},
+	{"large interval member across kinds", "", `"a" \in 1..2000000`, `cannot test whether string "a" is in 1..2000000`},
+	{"permutations too large", "", `Permutations(1..10)`, "Permutations of a 10-element set is too large to enumerate"},
 	{"div overflow", "", `(-9223372036854775807 - 1) \div -1`, "integer overflow"},
 	{"sub overflow", "", `(-9223372036854775807 - 1) - 1`, "integer overflow"},
 	{"unknown operator", "", `1 \prec 2`, "unexpected"},
@@ -165,6 +176,8 @@ func TestIntEdges(t *testing.T) {
 		{"-1 - (-9223372036854775807 - 1)", "9223372036854775807"},
 		{"0 - 9223372036854775807", "-9223372036854775807"},
 		{`(-9223372036854775807 - 1) \div 1`, "-9223372036854775808"},
+		{"9223372036854775807..9223372036854775807", "{9223372036854775807}"},
+		{"9223372036854775806..9223372036854775807", "{9223372036854775806, 9223372036854775807}"},
 	}
 	for _, tt := range tests {
 		got, err := evalString("", tt.in)

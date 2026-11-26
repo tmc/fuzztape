@@ -227,6 +227,16 @@ func TestParseErrors(t *testing.T) {
 		{"duplicate", "---- MODULE M ----\nA == 1\nA == 2\n====", "M.tla:3:1: A defined twice"},
 		{"no end", "---- MODULE M ----\nA == 1\n", "missing ===="},
 		{"repeated field", "---- MODULE M ----\nA == [a |-> 1, a |-> 2]\nASSUME A = A\n====", "M.tla:2:16: field a repeated"},
+		{"assume variable", "---- MODULE M ----\nVARIABLE x\nASSUME x = 1\n====", "variable x cannot appear in ASSUME"},
+		{"assume primed", "---- MODULE M ----\nVARIABLE x\nASSUME x' = 1\n====", "prime not allowed in ASSUME"},
+		{"assume unchanged", "---- MODULE M ----\nVARIABLE x\nASSUME UNCHANGED x\n====", "UNCHANGED not allowed in ASSUME"},
+		{"assume indirect variable", "---- MODULE M ----\nVARIABLE x\nF == x\nASSUME F = 1\n====", "variable x cannot appear in ASSUME"},
+		{"recursive eof", "---- MODULE M ----\nRECURSIVE F(_\n====", "expected ), found ===="},
+		{"recursive unclosed", "---- MODULE M ----\nRECURSIVE F(_", "expected ), found end of file"},
+		{"let recursive eof", "---- MODULE M ----\nASSUME LET RECURSIVE F(_\n====", "expected ), found ===="},
+		{"deep parens", "---- MODULE M ----\nASSUME " + strings.Repeat("(", 300) + "TRUE" + strings.Repeat(")", 300) + "\n====", "expression nested too deeply"},
+		{"deep not", "---- MODULE M ----\nASSUME " + strings.Repeat("~", 300) + "TRUE\n====", "expression nested too deeply"},
+		{"deep implies", "---- MODULE M ----\nASSUME " + strings.Repeat("TRUE => ", 300) + "TRUE\n====", "expression nested too deeply"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -247,6 +257,7 @@ Spec == Init /\ [][Next]_x
 Before(a, b) == a \prec b
 Fair == WF_x(Next)
 Big == \bigcirc x
+LOCAL LocalSpec == Init /\ [][Next]_x
 ====`
 	spec, err := Parse("M.tla", []byte(src))
 	if err != nil {
@@ -371,6 +382,66 @@ func TestFromGoErrors(t *testing.T) {
 		_, err := fromGo(tt.x)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: error %v, want it to contain %q", tt.name, err, tt.want)
+		}
+	}
+}
+
+func TestSolveUnchangedCycle(t *testing.T) {
+	src := "---- MODULE C ----\nVARIABLE x\nvars == vars\nInit == x = 0\nNext == UNCHANGED vars\n===="
+	spec, err := Parse("C.tla", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := spec.Start("Init", State{"x": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tr.Step(State{"x": 0}, "Next")
+	if err == nil || !strings.Contains(err.Error(), "recursion too deep") {
+		t.Fatalf("Step: %v, want recursion too deep", err)
+	}
+}
+
+func TestFormatFieldName(t *testing.T) {
+	tests := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"a": 1}, "[a |-> 1]"},
+		{map[string]any{"1": "x"}, `("1" :> "x")`},
+		{map[string]any{"TRUE": 1}, `("TRUE" :> 1)`},
+		{map[string]any{"_": 1}, `("_" :> 1)`},
+	}
+	for _, tt := range tests {
+		v, err := fromGo(tt.in)
+		if err != nil {
+			t.Fatalf("fromGo(%v): %v", tt.in, err)
+		}
+		if got := format(v); got != tt.want {
+			t.Errorf("format(%v) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestDeterministicErrors(t *testing.T) {
+	spec, err := Parse("M.tla", []byte("---- MODULE M ----\nCONSTANTS A\nVARIABLES x\nInit == x = A\n===="))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		_, err := spec.With(map[string]any{"A": 1, "Z": 2, "B": 3, "M": 4})
+		if err == nil || err.Error() != "M.tla: no constant B" {
+			t.Fatalf("With: %v, want M.tla: no constant B", err)
+		}
+	}
+	bound, err := spec.With(map[string]any{"A": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		_, err := bound.Start("Init", State{"z": 1, "b": 2, "m": 3})
+		if err == nil || err.Error() != "M.tla: no variable b" {
+			t.Fatalf("Start: %v, want M.tla: no variable b", err)
 		}
 	}
 }

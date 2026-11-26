@@ -20,12 +20,17 @@ type parser struct {
 	file string
 	toks []token
 	i    int
+	// nest counts nested expression calls to bound recursion.
+	nest int
 	// limits is the stack of junction-list columns. Inside a bulleted
 	// list, every token of an item must lie strictly right of its
 	// bullet, so a token at or left of the innermost column ends the
 	// item.
 	limits []int
 }
+
+// maxNestLev bounds expression nesting in the parser.
+const maxNestLev = 256
 
 // bailout carries a parse error up through the recursive descent.
 type bailout struct{ err error }
@@ -190,23 +195,11 @@ func (p *parser) unit(m *module, t token) {
 		if p.raw().kind == tKeyword && p.raw().text == "INSTANCE" {
 			p.errorf(p.raw().pos, "INSTANCE is not supported")
 		}
-		d := p.definition()
+		d := p.tolerantDefinition()
 		d.local = true
 		m.defs = append(m.defs, d)
 	case "RECURSIVE":
-		// Every definition may be recursive; the declaration adds
-		// nothing the evaluator needs.
-		for {
-			p.ident()
-			if p.accept("(") {
-				for !p.accept(")") {
-					p.next()
-				}
-			}
-			if !p.accept(",") {
-				break
-			}
-		}
+		p.parseRecursive()
 	case "INSTANCE":
 		p.errorf(t.pos, "INSTANCE is not supported")
 	default:
@@ -220,6 +213,29 @@ func (p *parser) identList() []string {
 		names = append(names, p.ident().text)
 		if !p.accept(",") {
 			return names
+		}
+	}
+}
+
+// parseRecursive parses the declarations after RECURSIVE: F, G(_, _).
+// Every definition may be recursive; the declaration adds nothing the
+// evaluator needs.
+func (p *parser) parseRecursive() {
+	for {
+		p.ident()
+		if p.accept("(") {
+			for {
+				if t := p.next(); t.text != "_" {
+					p.errorf(t.pos, "expected _ in RECURSIVE declaration, found %s", t)
+				}
+				if !p.accept(",") {
+					break
+				}
+			}
+			p.expect(")")
+		}
+		if !p.accept(",") {
+			break
 		}
 	}
 }
@@ -369,6 +385,11 @@ const (
 func (p *parser) expr() expr { return p.binary(0) }
 
 func (p *parser) binary(min int) expr {
+	p.nest++
+	if p.nest > maxNestLev {
+		p.errorf(p.peek().pos, "expression nested too deeply")
+	}
+	defer func() { p.nest-- }()
 	left := p.unary()
 	for {
 		t := p.peek()
@@ -521,17 +542,7 @@ func (p *parser) keywordExpr(t token) expr {
 		l := &letExpr{p: t.pos}
 		for !p.is("IN") {
 			if p.accept("RECURSIVE") {
-				for {
-					p.ident()
-					if p.accept("(") {
-						for !p.accept(")") {
-							p.next()
-						}
-					}
-					if !p.accept(",") {
-						break
-					}
-				}
+				p.parseRecursive()
 				continue
 			}
 			if p.peek().kind != tIdent {

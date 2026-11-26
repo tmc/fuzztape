@@ -2,6 +2,7 @@ package tlaplus
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -60,6 +61,9 @@ type ctx struct {
 	// state being determined, which unprimed variables then name.
 	cur, nxt []value
 	init     bool
+	// assume is set while evaluating an ASSUME statement, where
+	// variables, primes and UNCHANGED are not allowed.
+	assume bool
 	// primed is set while evaluating e', so that unprimed variables
 	// name the next state.
 	primed bool
@@ -114,6 +118,9 @@ func (s *Spec) eval(e expr, c *ctx) value {
 		}
 		return e.and
 	case *primeExpr:
+		if c.assume {
+			s.errorf(e.p, "prime not allowed in ASSUME")
+		}
 		if c.init || c.primed {
 			s.errorf(e.p, "prime not allowed here")
 		}
@@ -121,6 +128,9 @@ func (s *Spec) eval(e expr, c *ctx) value {
 		d.primed = true
 		return s.eval(e.x, &d)
 	case *unchangedExpr:
+		if c.assume {
+			s.errorf(e.p, "UNCHANGED not allowed in ASSUME")
+		}
 		if c.init {
 			s.errorf(e.p, "UNCHANGED not allowed in an initial predicate")
 		}
@@ -305,11 +315,20 @@ func (s *Spec) evalIdent(e *identExpr, c *ctx) value {
 }
 
 func (s *Spec) varValue(e *identExpr, i int, c *ctx) value {
+	if c.assume {
+		s.errorf(e.p, "variable %s cannot appear in ASSUME", e.name)
+	}
 	var v value
 	switch {
 	case c.init || c.primed:
+		if i >= len(c.nxt) {
+			s.errorf(e.p, "variable %s has no state", e.name)
+		}
 		v = c.nxt[i]
 	default:
+		if i >= len(c.cur) {
+			s.errorf(e.p, "variable %s has no state", e.name)
+		}
 		v = c.cur[i]
 	}
 	if v == nil {
@@ -487,14 +506,8 @@ func (s *Spec) except(f value, path []exceptPath, val expr, c *ctx) value {
 		}
 		key = newSeq(elems)
 	}
-	i := -1
-	for j, k := range fv.keys {
-		if compare(k, key) == 0 {
-			i = j
-			break
-		}
-	}
-	if i < 0 {
+	i, ok := slices.BinarySearchFunc(fv.keys, key, compare)
+	if !ok {
 		// TLC leaves the function unchanged when the key is outside
 		// its domain.
 		return fv

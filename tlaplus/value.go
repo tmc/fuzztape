@@ -34,12 +34,14 @@ type fcnValue struct {
 
 // A lazySet is a set given by a membership test, such as Nat or
 // [S -> T]. elems enumerates it, and is nil for a set that is infinite
-// or, if large is set, too large to enumerate.
+// or, if large is set, too large to enumerate. finite reports whether
+// the set is finite.
 type lazySet struct {
 	name   string
 	member func(at pos, v value) bool
 	elems  func() *setValue
 	large  bool
+	finite bool
 }
 
 // A lazyFcn is a function whose domain may be infinite, such as one
@@ -102,6 +104,18 @@ func newFcn(keys, vals []value) *fcnValue {
 	return f
 }
 
+// newFcnChecked returns the function mapping keys[i] to vals[i], or
+// (nil, false) if two keys are equal.
+func newFcnChecked(keys, vals []value) (*fcnValue, bool) {
+	f := newFcn(keys, vals)
+	for i := 1; i < len(f.keys); i++ {
+		if compare(f.keys[i-1], f.keys[i]) == 0 {
+			return nil, false
+		}
+	}
+	return f, true
+}
+
 // newSeq returns the sequence <<elems...>>.
 func newSeq(elems []value) *fcnValue {
 	if len(elems) == 0 {
@@ -149,15 +163,7 @@ func (f *fcnValue) isRecord() bool {
 }
 
 func isFieldName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if !isIdentByte(s[i]) {
-			return false
-		}
-	}
-	return true
+	return isModelName(s)
 }
 
 // kind ranks values for compare. Lazy sets rank with sets and lazy
@@ -453,10 +459,11 @@ func fromReflect(rv reflect.Value, depth int) (value, error) {
 		if set {
 			return newSet(keys), nil
 		}
-		if len(newSet(slices.Clone(keys)).elems) < len(keys) {
+		f, ok := newFcnChecked(keys, vals)
+		if !ok {
 			return nil, fmt.Errorf("map %s has keys that convert to the same value", rv.Type())
 		}
-		return newFcn(keys, vals), nil
+		return f, nil
 	case reflect.Struct:
 		t := rv.Type()
 		var keys, vals []value

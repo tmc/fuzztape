@@ -270,6 +270,11 @@ func (s *Spec) solveUnchanged(x expr, at pos, c *ctx, k func(*ctx)) {
 		return
 	case *identExpr:
 		if t, ok := s.thunkOf(x, c); ok {
+			*c.depth++
+			defer func() { *c.depth-- }()
+			if *c.depth > maxDepth {
+				s.errorf(at, "recursion too deep in UNCHANGED %s", x.name)
+			}
 			s.solveUnchanged(t.e, at, s.thunkCtx(t, c), s.restore(c, k))
 			return
 		}
@@ -289,6 +294,11 @@ func (s *Spec) solveUnchanged(x expr, at pos, c *ctx, k func(*ctx)) {
 			}
 		}
 		if d, env, ok := s.lookupDef(x.name, c); ok && !d.fcn && len(d.params) == 0 {
+			*c.depth++
+			defer func() { *c.depth-- }()
+			if *c.depth > maxDepth {
+				s.errorf(at, "recursion too deep in %s", d.name)
+			}
 			s.solveUnchanged(d.body, at, c.with(env), s.restore(c, k))
 			return
 		}

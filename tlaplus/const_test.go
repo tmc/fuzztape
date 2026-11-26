@@ -50,6 +50,7 @@ var constTests = []struct{ in, want string }{
 	{"a \\in Nat", "FALSE"},
 	{"a \\in Int", "FALSE"},
 	{"a \\in STRING", "FALSE"},
+	{"a \\in 1..2000000", "FALSE"},
 	{"{a, 1}", "{1, a}"},
 	{"S \\cup {N}", "{3, a, b}"},
 	{"Cardinality(S)", "2"},

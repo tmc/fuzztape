@@ -2,6 +2,8 @@ package tlaplus
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -119,7 +121,7 @@ func (s *Spec) With(constants map[string]any) (*Spec, error) {
 		}
 		consts[c] = v
 	}
-	for name := range constants {
+	for _, name := range slices.Sorted(maps.Keys(constants)) {
 		if _, ok := consts[name]; !ok {
 			return nil, fmt.Errorf("%s: no constant %s", s.file, name)
 		}
@@ -144,7 +146,7 @@ func (s *Spec) checkAssumes() error {
 func (s *Spec) assume(a expr) (err error) {
 	defer catch(&err)
 	depth := 0
-	c := &ctx{fail: &failure{}, depth: &depth}
+	c := &ctx{assume: true, fail: &failure{}, depth: &depth}
 	if !s.evalBool(a, c) {
 		return &posError{file: s.file, pos: start(a), msg: "assumption is false: " + s.snippet(a)}
 	}
@@ -182,7 +184,8 @@ type Trace struct {
 const maxFrontier = 1 << 16
 
 // Start begins a trace in obs, which must satisfy the operator named
-// init (usually "Init"). The error is a *StepError for step 0.
+// init (usually "Init"). It reports a *StepError for step 0 if no
+// initial state agrees with obs.
 func (s *Spec) Start(init string, obs State) (*Trace, error) {
 	if init == "" {
 		init = "Init"
@@ -261,12 +264,12 @@ func (s *Spec) action(name string, n int) (*opDef, error) {
 // observe converts an observation to a partial state.
 func (s *Spec) observe(obs State) ([]value, error) {
 	nxt := make([]value, len(s.vars))
-	for name, x := range obs {
+	for _, name := range slices.Sorted(maps.Keys(obs)) {
 		i, ok := s.varIndex[name]
 		if !ok {
 			return nil, fmt.Errorf("%s: no variable %s", s.file, name)
 		}
-		v, err := fromGo(x)
+		v, err := fromGo(obs[name])
 		if err != nil {
 			return nil, fmt.Errorf("variable %s: %w", name, err)
 		}

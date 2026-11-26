@@ -181,7 +181,7 @@ func init() {
 		},
 		"..": func(s *Spec, at pos, a []value) value {
 			lo, hi := s.ints(at, a)
-			return interval(lo, hi)
+			return s.interval(lo, hi)
 		},
 		"<":  func(s *Spec, at pos, a []value) value { x, y := s.ints(at, a); return x < y },
 		">":  func(s *Spec, at pos, a []value) value { x, y := s.ints(at, a); return x > y },
@@ -190,7 +190,8 @@ func init() {
 
 		"Seq": func(s *Spec, at pos, a []value) value {
 			elem := a[0]
-			return &lazySet{name: "Seq(" + format(elem) + ")", member: func(at pos, v value) bool {
+			sv, empty := elem.(*setValue)
+			return &lazySet{name: "Seq(" + format(elem) + ")", finite: empty && len(sv.elems) == 0, member: func(at pos, v value) bool {
 				f, ok := s.force(at, v).(*fcnValue)
 				if !ok || !f.isSeq() {
 					return false
@@ -266,7 +267,7 @@ func init() {
 			case *setValue:
 				return true
 			case *lazySet:
-				return v.elems != nil
+				return v.finite
 			}
 			s.errorf(at, "IsFiniteSet of %s %s", kindName(a[0]), format(a[0]))
 			return nil
@@ -301,6 +302,9 @@ func init() {
 		},
 		"Permutations": func(s *Spec, at pos, a []value) value {
 			elems := s.enumerate(at, a[0]).elems
+			if len(elems) > 9 {
+				s.errorf(at, "Permutations of a %d-element set is too large to enumerate", len(elems))
+			}
 			var perms []value
 			var perm func(i int, used []bool, img []value)
 			perm = func(i int, used []bool, img []value) {
@@ -468,21 +472,42 @@ func boolInt(b bool) int {
 // certainly enumerating something it should test for membership.
 const maxFinite = 1 << 20
 
+func isFiniteValue(v value) bool {
+	switch v := v.(type) {
+	case *setValue:
+		return true
+	case *lazySet:
+		return v.finite
+	}
+	return false
+}
+
+func allFinite(sets []value) bool {
+	for _, set := range sets {
+		if !isFiniteValue(set) {
+			return false
+		}
+	}
+	return true
+}
+
 // interval returns lo..hi.
-func interval(lo, hi int64) value {
+func (s *Spec) interval(lo, hi int64) value {
 	if hi < lo {
 		return emptySet
 	}
 	if uint64(hi-lo) < maxFinite {
-		elems := make([]value, 0, hi-lo+1)
-		for i := lo; i <= hi; i++ {
-			elems = append(elems, i)
+		n := int(hi-lo) + 1
+		elems := make([]value, n)
+		for k := range n {
+			elems[k] = lo + int64(k)
 		}
 		return &setValue{elems: elems}
 	}
-	return &lazySet{name: formatInterval(lo, hi), large: true, member: func(at pos, v value) bool {
-		n, ok := v.(int64)
-		return ok && lo <= n && n <= hi
+	name := formatInterval(lo, hi)
+	return &lazySet{name: name, large: true, finite: true, member: func(at pos, v value) bool {
+		n, ok := s.kindArg(at, v, name, int64(0))
+		return ok && lo <= n.(int64) && n.(int64) <= hi
 	}}
 }
 
@@ -513,7 +538,8 @@ func (s *Spec) subset(at pos, x, y value) bool {
 func (s *Spec) powerset(at pos, set value) value {
 	base := set
 	return &lazySet{
-		name: "SUBSET " + format(set),
+		name:   "SUBSET " + format(set),
+		finite: isFiniteValue(set),
 		member: func(at pos, v value) bool {
 			if kind(v) != kind(emptySet) {
 				return false
@@ -543,7 +569,8 @@ func (s *Spec) powerset(at pos, set value) value {
 // fcnSet returns [dom -> codom].
 func (s *Spec) fcnSet(at pos, dom, codom value) value {
 	return &lazySet{
-		name: "[" + format(dom) + " -> " + format(codom) + "]",
+		name:   "[" + format(dom) + " -> " + format(codom) + "]",
+		finite: isFiniteValue(dom) && isFiniteValue(codom),
 		member: func(at pos, v value) bool {
 			f, ok := s.force(at, v).(*fcnValue)
 			if !ok {
@@ -563,12 +590,18 @@ func (s *Spec) fcnSet(at pos, dom, codom value) value {
 		elems: func() *setValue {
 			keys := s.enumerate(at, dom).elems
 			vals := s.enumerate(at, codom).elems
+			if len(vals) == 0 {
+				if len(keys) == 0 {
+					return newSet([]value{emptyFcn})
+				}
+				return emptySet
+			}
 			total := 1
 			for range keys {
-				total *= len(vals)
-				if total > maxFinite {
+				if total > maxFinite/len(vals) {
 					s.errorf(at, "[%s -> %s] is too large to enumerate", format(dom), format(codom))
 				}
+				total *= len(vals)
 			}
 			var fcns []value
 			img := make([]value, len(keys))
@@ -598,7 +631,8 @@ func (s *Spec) recordSet(at pos, fields []string, sets []value) value {
 	dom := newSet(slices.Clone(keys))
 	byField := newFcn(keys, sets)
 	return &lazySet{
-		name: "[record set]",
+		name:   "[record set]",
+		finite: allFinite(sets),
 		member: func(at pos, v value) bool {
 			f, ok := s.force(at, v).(*fcnValue)
 			if !ok || len(f.keys) != len(dom.elems) {
@@ -638,7 +672,8 @@ func (s *Spec) recordSet(at pos, fields []string, sets []value) value {
 // product returns S1 \X S2 \X ..., a set of tuples.
 func (s *Spec) product(at pos, sets []value) value {
 	return &lazySet{
-		name: "[product]",
+		name:   "[product]",
+		finite: allFinite(sets),
 		member: func(at pos, v value) bool {
 			f, ok := s.force(at, v).(*fcnValue)
 			if !ok || !f.isSeq() || len(f.vals) != len(sets) {
