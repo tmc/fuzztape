@@ -30,6 +30,12 @@ type Pair[S, M any] struct {
 }
 
 // Init returns a [fuzztape.Machine] Init that builds both sides.
+//
+// Both constructors receive the same *fuzztape.T in order (sut, then
+// model). A tape is consumed front to back, so if both sides need the
+// same initial configuration drawn from the tape, write a custom Init
+// that draws once and passes the value to both rather than drawing
+// independently inside sut and model.
 func Init[S, M any](sut func(t *fuzztape.T) S, model func(t *fuzztape.T) M) func(t *fuzztape.T) Pair[S, M] {
 	return func(t *fuzztape.T) Pair[S, M] {
 		return Pair[S, M]{SUT: sut(t), Model: model(t)}
@@ -59,7 +65,7 @@ func OpFunc[S, M, A, R any](name string, g fuzztape.Gen[A], sut func(s S, v A) R
 			got := sut(p.SUT, v)
 			want := model(p.Model, v)
 			if !equal(got, want) {
-				t.Fatalf("%s(%+v) = %+v, model says %+v", name, v, got, want)
+				t.Fatalf("model: %s(%+v) = %+v, model says %+v", name, v, got, want)
 			}
 		},
 	}
@@ -94,7 +100,7 @@ func EqualFunc[S, M, R any](sut func(s S) R, model func(m M) R, equal func(got, 
 	return func(t *fuzztape.T, p Pair[S, M]) {
 		got, want := sut(p.SUT), model(p.Model)
 		if !equal(got, want) {
-			t.Fatalf("state diverged: system under test %+v, model %+v", got, want)
+			t.Fatalf("model: state diverged: system under test %+v, model %+v", got, want)
 		}
 	}
 }
