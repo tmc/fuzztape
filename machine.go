@@ -1,21 +1,20 @@
 package fuzztape
 
 import (
-	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/tmc/fuzztape/internal/fuzzfile"
 )
 
 var seedFlag = flag.Int64("fuzztape.seed", 0, "seed for fuzztape Machine.Run case generation (0 derives one)")
@@ -286,11 +285,7 @@ func (m Machine[S]) replaySeeds(t *testing.T, w *watchdog) bool {
 // go test itself refuses with "not a directory". Silently reporting success
 // there loses the regression the corpus exists to keep.
 func corpusEntries(dir string) ([]os.DirEntry, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	return entries, err
+	return fuzzfile.ReadDir(dir)
 }
 
 // runTape runs one input, inside a synctest bubble if Bubble is set,
@@ -571,48 +566,14 @@ func (m Machine[S]) shrink(t *testing.T, data []byte, w *watchdog) []byte {
 	return data
 }
 
-// corpusHeader is the first line of every go test fuzz corpus file.
-const corpusHeader = "go test fuzz v1"
-
 // writeCorpusFile saves data as a seed corpus file for the named fuzz
 // target, in the format go test replays from testdata/fuzz.
 func writeCorpusFile(target string, data []byte) (string, error) {
-	dir := filepath.Join("testdata", "fuzz", target)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	content := fmt.Sprintf("%s\n[]byte(%q)\n", corpusHeader, data)
-	path := filepath.Join(dir, fmt.Sprintf("fuzztape-%x", sha256.Sum256(data))[:24])
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+	return fuzzfile.Write(filepath.Join("testdata", "fuzz", target), data)
 }
 
 // readCorpusFile reads a seed corpus file holding the single []byte
-// value a Machine target takes. It reports an error for the other
-// shapes go test's format allows — a different version, or a record of
-// several typed values — rather than guessing at them.
+// value a Machine target takes.
 func readCorpusFile(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if len(lines) != 2 || strings.TrimSpace(lines[0]) != corpusHeader {
-		return nil, fmt.Errorf("%s: not a %s corpus file holding one []byte", path, corpusHeader)
-	}
-	v, ok := strings.CutPrefix(strings.TrimSpace(lines[1]), "[]byte(")
-	if !ok {
-		return nil, fmt.Errorf("%s: corpus value is not a []byte", path)
-	}
-	v, ok = strings.CutSuffix(v, ")")
-	if !ok {
-		return nil, fmt.Errorf("%s: malformed corpus value", path)
-	}
-	s, err := strconv.Unquote(v)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %v", path, err)
-	}
-	return []byte(s), nil
+	return fuzzfile.Read(path)
 }

@@ -32,9 +32,9 @@ func TestRoundTrip(t *testing.T) {
 		{0x00, 0x22, 0x5c, 0xff, '\n', '\t'},
 		bytes.Repeat([]byte{0xde, 0xad}, 64),
 	} {
-		path, err := corpus.WriteFile(dir, data)
+		path, err := corpus.Save(dir, data)
 		if err != nil {
-			t.Fatalf("WriteFile: %v", err)
+			t.Fatalf("Save: %v", err)
 		}
 		got, err := corpus.ReadFile(path)
 		if err != nil {
@@ -60,7 +60,7 @@ func TestSeedsReadsAll(t *testing.T) {
 	dir := t.TempDir()
 	want := [][]byte{{1}, {2, 3}, {4, 5, 6}}
 	for _, w := range want {
-		if _, err := corpus.WriteFile(dir, w); err != nil {
+		if _, err := corpus.Save(dir, w); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +202,7 @@ func TestAuditUnreadableFile(t *testing.T) {
 // TestAddSeedsTarget checks the one-line path into a fuzz target.
 func FuzzWithCorpus(f *testing.F) {
 	dir := f.TempDir()
-	if _, err := corpus.WriteFile(dir, []byte{0, 0, 0}); err != nil {
+	if _, err := corpus.Save(dir, []byte{0, 0, 0}); err != nil {
 		f.Fatal(err)
 	}
 	corpus.Add(f, dir)
@@ -212,7 +212,7 @@ func FuzzWithCorpus(f *testing.F) {
 
 func mustWrite(t *testing.T, dir string, data []byte) {
 	t.Helper()
-	if _, err := corpus.WriteFile(dir, data); err != nil {
+	if _, err := corpus.Save(dir, data); err != nil {
 		t.Fatal(err)
 	}
 }

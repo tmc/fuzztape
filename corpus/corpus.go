@@ -16,27 +16,20 @@ package corpus
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/tmc/fuzztape"
+	"github.com/tmc/fuzztape/internal/fuzzfile"
 )
-
-// header is the first line of every go test fuzz corpus file.
-const header = "go test fuzz v1"
 
 // Seeds reads every corpus file in dir and returns their inputs, sorted
 // by file name so a run is reproducible. A missing directory yields no
 // seeds and no error: a corpus that has not been created yet is the
 // normal state of a new target, not a failure.
 func Seeds(dir string) ([][]byte, error) {
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+	entries, err := fuzzfile.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -74,41 +67,13 @@ func Add(f *testing.F, dir string) {
 // shapes go test's format allows — a different version, or a record of
 // several typed values — rather than guessing at them.
 func ReadFile(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if len(lines) != 2 || strings.TrimSpace(lines[0]) != header {
-		return nil, fmt.Errorf("%s: not a %s corpus file holding one []byte", path, header)
-	}
-	v, ok := strings.CutPrefix(strings.TrimSpace(lines[1]), "[]byte(")
-	if !ok {
-		return nil, fmt.Errorf("%s: corpus value is not a []byte", path)
-	}
-	v, ok = strings.CutSuffix(v, ")")
-	if !ok {
-		return nil, fmt.Errorf("%s: malformed corpus value", path)
-	}
-	s, err := strconv.Unquote(v)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %v", path, err)
-	}
-	return []byte(s), nil
+	return fuzzfile.Read(path)
 }
 
-// WriteFile saves data as a corpus file in dir, named for its content,
+// Save writes data as a corpus file in dir, named for its content,
 // and returns the path.
-func WriteFile(dir string, data []byte) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, fmt.Sprintf("corpus-%x", hash(data)))
-	content := fmt.Sprintf("%s\n[]byte(%q)\n", header, data)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+func Save(dir string, data []byte) (string, error) {
+	return fuzzfile.Write(dir, data)
 }
 
 // A Finding is one corpus file that is not pulling its weight.
@@ -142,10 +107,7 @@ func (f Finding) String() string {
 // judgment calls.
 func Audit[S any](t *testing.T, m fuzztape.Machine[S], dir string) []Finding {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	entries, err := fuzzfile.ReadDir(dir)
 	if err != nil {
 		t.Errorf("corpus: %v", err)
 		return nil
@@ -180,20 +142,4 @@ func Audit[S any](t *testing.T, m fuzztape.Machine[S], dir string) []Finding {
 		seen[key] = path
 	}
 	return findings
-}
-
-// hash is a content hash for corpus file names. It is FNV-1a rather
-// than a cryptographic hash because the only requirement is that two
-// different inputs rarely collide in a directory listing.
-func hash(data []byte) uint64 {
-	const (
-		offset = 14695981039346656037
-		prime  = 1099511628211
-	)
-	h := uint64(offset)
-	for _, b := range data {
-		h ^= uint64(b)
-		h *= prime
-	}
-	return h
 }
