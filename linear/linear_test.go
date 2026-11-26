@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tmc/fuzztape"
@@ -55,13 +56,13 @@ func (r *register) Write(v int) {
 	} else {
 		r.v = v
 	}
-	op.Done(r.history, 0)
+	op.Done(0)
 }
 
 func (r *register) Read() {
 	op := r.history.Start("read", call{})
 	r.sched.Yield()
-	op.Done(r.history, r.v)
+	op.Done(r.v)
 }
 
 func machine(racy bool) fuzztape.Machine[*register] {
@@ -128,10 +129,10 @@ func TestCheckAcceptsOverlap(t *testing.T) {
 	// rather than insisting on call order.
 	w1 := h.Start("write1", call{Write: true, Value: 1})
 	w2 := h.Start("write2", call{Write: true, Value: 2})
-	w2.Done(&h, 0)
-	w1.Done(&h, 0)
+	w2.Done(0)
+	w1.Done(0)
 	r := h.Start("read", call{})
-	r.Done(&h, 2)
+	r.Done(2)
 
 	order, ok := linear.Check(&h, 0, step)
 	if !ok {
@@ -148,9 +149,9 @@ func TestCheckAcceptsOverlap(t *testing.T) {
 func TestCheckRejectsStaleRead(t *testing.T) {
 	var h linear.History[call, int]
 	w := h.Start("write", call{Write: true, Value: 7})
-	w.Done(&h, 0)
+	w.Done(0)
 	r := h.Start("read", call{})
-	r.Done(&h, 0) // 0 was overwritten by 7 before this read was called
+	r.Done(0) // 0 was overwritten by 7 before this read was called
 
 	if _, ok := linear.Check(&h, 0, step); ok {
 		t.Errorf("accepted a stale read:\n%s", &h)
@@ -164,7 +165,7 @@ func TestCheckPendingOperation(t *testing.T) {
 	var h linear.History[call, int]
 	h.Start("write", call{Write: true, Value: 5}) // never completes
 	r := h.Start("read", call{})
-	r.Done(&h, 0) // legal: the pending write may not have happened yet
+	r.Done(0) // legal: the pending write may not have happened yet
 
 	if _, ok := linear.Check(&h, 0, step); !ok {
 		t.Errorf("rejected a history whose only conflict is a pending op:\n%s", &h)
@@ -200,10 +201,10 @@ func TestCheckPendingOpKeepsStateHonest(t *testing.T) {
 	newHistory := func() *linear.History[call, int] {
 		h := new(linear.History[call, int])
 		w := h.Start("write", call{Write: true, Value: 5})
-		w.Done(h, 0)
+		w.Done(0)
 		h.Start("pending-read", call{}) // never completes
 		r := h.Start("read", call{})
-		r.Done(h, 0) // 0 was overwritten by 5 before this read was called
+		r.Done(0) // 0 was overwritten by 5 before this read was called
 		return h
 	}
 	for _, tc := range []struct {
@@ -230,7 +231,7 @@ func TestCheckPanicsOnLongHistory(t *testing.T) {
 	var h linear.History[call, int]
 	for range 65 {
 		op := h.Start("write", call{Write: true, Value: 1})
-		op.Done(&h, 0)
+		op.Done(0)
 	}
 	defer func() {
 		r := recover()
@@ -249,6 +250,94 @@ func TestCheckEmpty(t *testing.T) {
 	var h linear.History[call, int]
 	if _, ok := linear.Check(&h, 0, step); !ok {
 		t.Error("empty history rejected")
+	}
+}
+
+// TestOpDoneTwicePanics checks that completing the same Op twice panics.
+func TestOpDoneTwicePanics(t *testing.T) {
+	var h linear.History[call, int]
+	op := h.Start("write", call{Write: true, Value: 1})
+	op.Done(0)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("second Done did not panic")
+		}
+	}()
+	op.Done(0)
+}
+
+// TestOpDoneZeroPanics checks that Done on an unstarted Op panics.
+func TestOpDoneZeroPanics(t *testing.T) {
+	var op linear.Op[call, int]
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Done on zero Op did not panic")
+		}
+	}()
+	op.Done(0)
+}
+
+// TestCheckConcurrentStartDone exercises Check concurrently with Start
+// and Done under -race. Check must snapshot Op values under the lock so
+// concurrent Done calls cannot race with the search.
+func TestCheckConcurrentStartDone(t *testing.T) {
+	for range 20 {
+		var h linear.History[call, int]
+		var mu sync.Mutex
+		val := 0
+
+		const workers = 4
+		const perWorker = 8 // 32 ops total <= 64
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					if _, ok := linear.Check(&h, 0, step); !ok {
+						t.Errorf("concurrent Check rejected a linearizable history:\n%s", &h)
+						return
+					}
+					_ = h.String()
+				}
+			}
+		}()
+
+		var workWG sync.WaitGroup
+		for w := range workers {
+			workWG.Add(1)
+			go func(id int) {
+				defer workWG.Done()
+				for k := range perWorker {
+					if k%2 == 0 {
+						v := id*perWorker + k + 1
+						op := h.Start("write", call{Write: true, Value: v})
+						mu.Lock()
+						val = v
+						mu.Unlock()
+						op.Done(0)
+					} else {
+						op := h.Start("read", call{})
+						mu.Lock()
+						got := val
+						mu.Unlock()
+						op.Done(got)
+					}
+				}
+			}(w)
+		}
+		workWG.Wait()
+		close(stop)
+		wg.Wait()
+
+		if _, ok := linear.Check(&h, 0, step); !ok {
+			t.Fatalf("final Check rejected a linearizable history:\n%s", &h)
+		}
 	}
 }
 

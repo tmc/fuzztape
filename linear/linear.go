@@ -43,12 +43,14 @@ import (
 const maxOps = 64
 
 // An Op is one recorded operation: its arguments, its result, and the
-// interval over which it ran.
+// interval over which it ran. Obtain an Op from [History.Start] and do
+// not modify its fields directly.
 type Op[I, O any] struct {
 	Name string
 	In   I
 	Out  O
 
+	h          *History[I, O]
 	start, end int
 }
 
@@ -72,23 +74,43 @@ type History[I, O any] struct {
 func (h *History[I, O]) Start(name string, in I) *Op[I, O] {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	op := &Op[I, O]{Name: name, In: in, start: h.clock, end: math.MaxInt}
+	op := &Op[I, O]{Name: name, In: in, h: h, start: h.clock, end: math.MaxInt}
 	h.clock++
 	h.ops = append(h.ops, op)
 	return op
 }
 
 // Done records the result of an operation and the moment it returned.
-func (op *Op[I, O]) Done(h *History[I, O], out O) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// It panics if op was not returned by [History.Start] or if Done has
+// already been called on op.
+func (op *Op[I, O]) Done(out O) {
+	if op.h == nil {
+		panic("linear: Done called on Op not returned by History.Start")
+	}
+	op.h.mu.Lock()
+	defer op.h.mu.Unlock()
+	if !op.pending() {
+		panic("linear: Done called more than once on the same Op")
+	}
 	op.Out = out
-	op.end = h.clock
-	h.clock++
+	op.end = op.h.clock
+	op.h.clock++
 }
 
 // pending reports whether the operation never returned.
 func (op *Op[I, O]) pending() bool { return op.end == math.MaxInt }
+
+// snapshot copies the recorded ops by value under h.mu so Check,
+// Assert, and String never race with concurrent Start or Done calls.
+func (h *History[I, O]) snapshot() []Op[I, O] {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ops := make([]Op[I, O], len(h.ops))
+	for i, op := range h.ops {
+		ops[i] = *op
+	}
+	return ops
+}
 
 // Len returns the number of operations recorded.
 func (h *History[I, O]) Len() int {
@@ -100,10 +122,13 @@ func (h *History[I, O]) Len() int {
 // String returns the history as one line per operation, in call order,
 // marking any that never returned.
 func (h *History[I, O]) String() string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	return formatOps(h.snapshot())
+}
+
+func formatOps[I, O any](ops []Op[I, O]) string {
 	var b strings.Builder
-	for _, op := range h.ops {
+	for i := range ops {
+		op := &ops[i]
 		if b.Len() > 0 {
 			b.WriteByte('\n')
 		}
@@ -142,15 +167,16 @@ type Step[S, I, O any] func(s S, in I, out O) (next S, ok bool)
 // the test rather than of the system under test: lower Machine.MaxOps.
 // [Assert] reports the same condition as a test failure instead.
 func Check[S comparable, I, O any](h *History[I, O], init S, step Step[S, I, O]) (order []string, ok bool) {
-	h.mu.Lock()
-	ops := append([]*Op[I, O](nil), h.ops...)
-	h.mu.Unlock()
-
-	if len(ops) == 0 {
-		return nil, true
-	}
+	ops := h.snapshot()
 	if len(ops) > maxOps {
 		panic(fmt.Sprintf("linear: history has %d operations, over the %d the search supports", len(ops), maxOps))
+	}
+	return check(ops, init, step)
+}
+
+func check[S comparable, I, O any](ops []Op[I, O], init S, step Step[S, I, O]) (order []string, ok bool) {
+	if len(ops) == 0 {
+		return nil, true
 	}
 	var mask uint64 = 1<<len(ops) - 1
 	found := make([]string, 0, len(ops))
@@ -172,7 +198,7 @@ type memo[S comparable] struct {
 // is every remaining operation called before the earliest remaining
 // return. Anything called later must wait, because an operation that
 // returned before it was called has to precede it.
-func search[S comparable, I, O any](ops []*Op[I, O], mask uint64, state S, step Step[S, I, O], seen map[memo[S]]bool, order *[]string) bool {
+func search[S comparable, I, O any](ops []Op[I, O], mask uint64, state S, step Step[S, I, O], seen map[memo[S]]bool, order *[]string) bool {
 	if mask == 0 {
 		return true
 	}
@@ -183,12 +209,13 @@ func search[S comparable, I, O any](ops []*Op[I, O], mask uint64, state S, step 
 	seen[k] = true
 
 	earliestReturn := math.MaxInt
-	for i, op := range ops {
-		if mask&(1<<i) != 0 && op.end < earliestReturn {
-			earliestReturn = op.end
+	for i := range ops {
+		if mask&(1<<i) != 0 && ops[i].end < earliestReturn {
+			earliestReturn = ops[i].end
 		}
 	}
-	for i, op := range ops {
+	for i := range ops {
+		op := &ops[i]
 		if mask&(1<<i) == 0 || op.start > earliestReturn {
 			continue
 		}
@@ -221,11 +248,12 @@ func search[S comparable, I, O any](ops []*Op[I, O], mask uint64, state S, step 
 // in Init so that it runs once the sequence has settled.
 func Assert[S comparable, I, O any](t *fuzztape.T, h *History[I, O], init S, step Step[S, I, O]) {
 	t.Helper()
-	if h.Len() > maxOps {
+	ops := h.snapshot()
+	if len(ops) > maxOps {
 		t.Fatalf("linear: history has %d operations, over the %d the search supports; lower Machine.MaxOps",
-			h.Len(), maxOps)
+			len(ops), maxOps)
 	}
-	if _, ok := Check(h, init, step); !ok {
-		t.Fatalf("linear: no sequential order explains this history:\n%s", h)
+	if _, ok := check(ops, init, step); !ok {
+		t.Fatalf("linear: no sequential order explains this history:\n%s", formatOps(ops))
 	}
 }
