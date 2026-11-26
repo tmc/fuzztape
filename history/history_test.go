@@ -126,6 +126,9 @@ func TestReadRejectsDamage(t *testing.T) {
 			if err == nil {
 				t.Fatalf("damaged history accepted:\n%s", strings.Join(damaged, "\n"))
 			}
+			if !strings.HasPrefix(err.Error(), "history: ") {
+				t.Errorf("error %q, want \"history: \" prefix", err)
+			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q, want it to mention %q", err, tt.want)
 			}
@@ -171,6 +174,6 @@ func ExampleRead() {
 	events, err := history.Read(strings.NewReader(h + `{"kind":"end","count":2,"ops":{"add":1,"reset":1}}` + "\n"))
 	fmt.Println(len(events), err)
 	// Output:
-	// missing end marker after 2 events
+	// history: missing end marker after 2 events
 	// 2 <nil>
 }

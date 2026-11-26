@@ -93,16 +93,16 @@ func Write(w io.Writer, r fuzztape.Result) error {
 	for i, rec := range r.Records {
 		outcome, ok := outcomes[rec.Outcome]
 		if !ok {
-			return fmt.Errorf("event %d: unknown outcome %d", i+1, rec.Outcome)
+			return fmt.Errorf("history: event %d: unknown outcome %d", i+1, rec.Outcome)
 		}
 		ev := Event{Seq: i + 1, Op: rec.Name, Args: rec.Args, Outcome: outcome}
 		if err := enc.Encode(eventLine{"event", ev}); err != nil {
-			return fmt.Errorf("write event %d: %w", i+1, err)
+			return fmt.Errorf("history: write event %d: %w", i+1, err)
 		}
 		ops[rec.Name]++
 	}
 	if err := enc.Encode(endLine{"end", len(r.Records), ops}); err != nil {
-		return fmt.Errorf("write end marker: %w", err)
+		return fmt.Errorf("history: write end marker: %w", err)
 	}
 	return nil
 }
@@ -120,35 +120,35 @@ func Read(r io.Reader) ([]Event, error) {
 		var l line
 		if err := dec.Decode(&l); err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("missing end marker after %d events", len(events))
+				return nil, fmt.Errorf("history: missing end marker after %d events", len(events))
 			}
-			return nil, fmt.Errorf("line %d: %w", n, err)
+			return nil, fmt.Errorf("history: line %d: %w", n, err)
 		}
 		switch l.Kind {
 		case "event":
 			if want := len(events) + 1; l.Seq != want {
-				return nil, fmt.Errorf("line %d: seq %d, want %d", n, l.Seq, want)
+				return nil, fmt.Errorf("history: line %d: seq %d, want %d", n, l.Seq, want)
 			}
 			switch l.Outcome {
 			case "applied", "rejected", "failed":
 			default:
-				return nil, fmt.Errorf("line %d: unknown outcome %q", n, l.Outcome)
+				return nil, fmt.Errorf("history: line %d: unknown outcome %q", n, l.Outcome)
 			}
 			events = append(events, Event{Seq: l.Seq, Op: l.Op, Args: l.Args, Outcome: l.Outcome})
 			ops[l.Op]++
 		case "end":
 			if l.Count != len(events) {
-				return nil, fmt.Errorf("line %d: end marker declares %d events, read %d", n, l.Count, len(events))
+				return nil, fmt.Errorf("history: line %d: end marker declares %d events, read %d", n, l.Count, len(events))
 			}
 			if !maps.Equal(l.Ops, ops) {
-				return nil, fmt.Errorf("line %d: end marker declares op counts %v, read %v", n, l.Ops, ops)
+				return nil, fmt.Errorf("history: line %d: end marker declares op counts %v, read %v", n, l.Ops, ops)
 			}
 			if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("line %d: data after end marker", n)
+				return nil, fmt.Errorf("history: line %d: data after end marker", n)
 			}
 			return events, nil
 		default:
-			return nil, fmt.Errorf("line %d: unknown kind %q", n, l.Kind)
+			return nil, fmt.Errorf("history: line %d: unknown kind %q", n, l.Kind)
 		}
 	}
 }
