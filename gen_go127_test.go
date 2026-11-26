@@ -9,9 +9,7 @@ import (
 )
 
 // TestGenericMethods checks the go1.27 method spellings against their
-// free-function counterparts. It runs only under a 1.27 toolchain:
-//
-//	GOTOOLCHAIN=go1.27rc1 go test ./internal/fuzztape/
+// free-function counterparts. It runs only under a 1.27 or later toolchain.
 func TestGenericMethods(t *testing.T) {
 	tape := fuzztape.New(nil)
 	double := fuzztape.Const(21).Map(func(n int) int { return 2 * n })

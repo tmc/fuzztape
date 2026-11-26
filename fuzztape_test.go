@@ -171,6 +171,18 @@ func TestGenWeighted(t *testing.T) {
 	}
 }
 
+func TestGenWeightedClonesSlices(t *testing.T) {
+	opts := []string{"first", "second"}
+	weights := []int{1, 9}
+	g := Weighted(opts, weights)
+	opts[0] = "mutated"
+	weights[0] = 0
+	weights[1] = 0
+	if got := g(New(nil)); got != "first" {
+		t.Errorf("Weighted after caller mutation = %q, want %q", got, "first")
+	}
+}
+
 func TestGenWeightedPanics(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -539,7 +551,7 @@ var panicker = Machine[*counter]{
 // test, in a temporary directory so the seed it saves is discarded.
 func TestMachinePanicCanary(t *testing.T) {
 	if os.Getenv("FUZZTAPE_CANARY") == "1" {
-		chdir(t, t.TempDir())
+		t.Chdir(t.TempDir())
 		panicker.Run(t, 2000)
 		return
 	}
@@ -680,7 +692,7 @@ func TestCorpusFileRoundTrip(t *testing.T) {
 		bytes.Repeat([]byte{0xde, 0xad}, 64),
 	} {
 		t.Run("", func(t *testing.T) {
-			chdir(t, t.TempDir())
+			t.Chdir(t.TempDir())
 			path, err := writeCorpusFile("FuzzX", data)
 			if err != nil {
 				t.Fatalf("writeCorpusFile: %v", err)
@@ -727,7 +739,7 @@ func TestMachineRunReplaysSeeds(t *testing.T) {
 		// The child plants a seed that drives the counter to 7 with
 		// seven "inc" ops, then runs a machine with zero random cases:
 		// only the seed can fail it.
-		chdir(t, t.TempDir())
+		t.Chdir(t.TempDir())
 		if _, err := writeCorpusFile("FuzzSeeded", make([]byte, 7)); err != nil {
 			t.Fatalf("writeCorpusFile: %v", err)
 		}
@@ -806,20 +818,6 @@ func wantAll(t *testing.T, out string, wants ...string) {
 			t.Errorf("child output missing %q; output:\n%s", want, out)
 		}
 	}
-}
-
-// chdir moves into dir for the duration of the test. It exists because
-// the corpus paths are relative to the working directory.
-func chdir(t *testing.T, dir string) {
-	t.Helper()
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(old) })
 }
 
 // FuzzMachineCanaryClean is the fuzz-mode integration check: the clean

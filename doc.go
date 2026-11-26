@@ -120,12 +120,12 @@ cannot: -fuzz takes one target in one package per invocation.
 # Go version
 
 The module builds with Go 1.26 and later. Under Go 1.27 and later it
-additionally provides method spellings of four of its functions —
-[Tape.Draw], [Tape.Pick], [Tape.OneOf], and [Gen.Map] — for
-left-to-right composition. Those methods are compiled only by a 1.27
-or later toolchain, and this documentation is built by one, so it
-lists them unconditionally: code that must build under 1.26 has to use
-the free functions [Pick], [OneOf], and [Map] instead.
+additionally provides generic methods — [Tape.Draw], [Tape.Pick],
+[Tape.OneOf], and [Gen.Map] — for left-to-right composition. Those
+methods are compiled only by a 1.27 or later toolchain, and this
+documentation is built by one, so it lists them unconditionally: code
+that must build under 1.26 has to call generators directly as g(tape)
+and use the free functions [Pick], [OneOf], and [Map] instead.
 
 # API stability
 

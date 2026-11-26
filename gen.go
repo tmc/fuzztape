@@ -2,6 +2,7 @@ package fuzztape
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -98,6 +99,8 @@ func Weighted[V any](opts []V, weights []int) Gen[V] {
 	if total == 0 {
 		panic("fuzztape: Weighted called with all-zero weights")
 	}
+	opts = slices.Clone(opts)
+	weights = slices.Clone(weights)
 	return func(t *Tape) V {
 		n := t.IntN(total)
 		for i, w := range weights {
