@@ -45,7 +45,7 @@ func poolMachine(leaky bool) fuzztape.Machine[*pool] {
 		Name: "",
 		Init: func(t *fuzztape.T) *pool {
 			p := &pool{ledger: new(budget.Ledger), leaky: leaky}
-			p.ledger.Balanced(t)
+			p.ledger.Check(t)
 			// Closing everything at the end of the sequence is what
 			// makes an outstanding handle a leak rather than a handle
 			// still legitimately in use.
@@ -100,7 +100,7 @@ func TestLedgerUnmatchedRelease(t *testing.T) {
 		t.Errorf("Peak = %d, want 1", got)
 	}
 	fake := &recorder{TB: t}
-	l.Balanced(fuzztape.NewT(fake, nil))
+	l.Check(fuzztape.NewT(fake, nil))
 	fake.runCleanups()
 	if !strings.Contains(fake.msg, "released without acquiring") {
 		t.Errorf("message = %q, want it to report the unmatched release", fake.msg)

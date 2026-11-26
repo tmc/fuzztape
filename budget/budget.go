@@ -55,7 +55,7 @@ func (l *Ledger) Acquire(name string) {
 
 // Release records one release of the named resource. A release with no
 // matching acquire is itself an error, recorded and reported by
-// [Ledger.Balanced]: double frees and phantom releases are as much a
+// [Ledger.Check]: double frees and phantom releases are as much a
 // bug as a leak, and silently clamping at zero would hide them.
 func (l *Ledger) Release(name string) {
 	l.mu.Lock()
@@ -86,14 +86,14 @@ func (l *Ledger) Peak(name string) int {
 	return l.peak[name]
 }
 
-// Balanced registers a check that runs when the sequence ends and fails
+// Check registers a cleanup that runs when the sequence ends and fails
 // if any resource is still outstanding or any release went unmatched.
 // Call it from [fuzztape.Machine] Init.
 //
 // Under Machine.Bubble the check runs inside the bubble, before its
 // exit check, so a leaked resource and a leaked goroutine are reported
 // from the same input rather than one masking the other.
-func (l *Ledger) Balanced(t *fuzztape.T) {
+func (l *Ledger) Check(t *fuzztape.T) {
 	t.Cleanup(func() {
 		if msg := l.imbalance(); msg != "" {
 			t.Errorf("budget: %s", msg)
