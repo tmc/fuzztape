@@ -1,31 +1,38 @@
 package main
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDiscover covers what counts as a fuzz target and what does not.
-// The near-misses matter more than the hits: a helper named FuzzHelper
-// or a target taking the wrong parameter must not be run as a target,
-// because the go command would reject it and the whole sweep would
-// report a failure that is not one.
+// The near-misses matter more than the hits: a helper named Fuzzy or a
+// target taking the wrong parameter must not be run as a target, because
+// the go command would reject it and the whole sweep would report a
+// failure that is not one.
 func TestDiscover(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "a_test.go"), `package a
 
 import "testing"
 
+func Fuzz(f *testing.F)        {}
 func FuzzOne(f *testing.F)     {}
 func FuzzTwo(f *testing.F)     {}
+func Fuzz_under(f *testing.F)  {}
+func Fuzz1(f *testing.F)       {}
 func TestNotAFuzz(t *testing.T) {}
 func FuzzWrongParam(t *testing.T) {}
 func FuzzNoParams()            {}
 func FuzzWithResult(f *testing.F) error { return nil }
 func Fuzzy(f *testing.F)       {}
+func FuzzGeneric[T any](f *testing.F) {}
+func FuzzMultiParam(a, b *testing.F)  {}
 `)
 	// A non-test file is not scanned, however Fuzz-shaped its contents.
 	write(t, filepath.Join(dir, "helpers.go"), `package a
@@ -66,7 +73,7 @@ func FuzzInTestdata(f *testing.F) {}
 	for _, tg := range targets {
 		names = append(names, tg.Name)
 	}
-	want := []string{"FuzzOne", "FuzzTwo", "Fuzzy", "FuzzNested"}
+	want := []string{"Fuzz", "FuzzOne", "FuzzTwo", "Fuzz_under", "Fuzz1", "FuzzNested"}
 	slices.Sort(names)
 	slices.Sort(want)
 	if !slices.Equal(names, want) {
@@ -93,26 +100,77 @@ func FuzzA(f *testing.F) {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.IsSortedFunc(targets, func(x, y Target) int {
-		if x.Pkg != y.Pkg {
-			return compare(x.Pkg, y.Pkg)
+	if !slices.IsSortedFunc(targets, func(x, y target) int {
+		if c := cmp.Compare(x.Pkg, y.Pkg); c != 0 {
+			return c
 		}
-		return compare(x.Name, y.Name)
+		return cmp.Compare(x.Name, y.Name)
 	}) {
 		t.Errorf("targets not sorted: %v", targets)
 	}
 }
 
 func TestPkgPattern(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{".", "."},
-		{"sub", "./sub"},
-		{"./sub", "./sub"},
-		{"a/b", "./a/b"},
+	abs := filepath.Join(string(filepath.Separator), "abs", "mod")
+	for _, tc := range []struct{ base, pkg, want string }{
+		{".", ".", "."},
+		{".", "sub", "./sub"},
+		{".", "./sub", "./sub"},
+		{".", "a/b", "./a/b"},
+		{"sub", "sub", "."},
+		{"sub", "sub/nested", "./nested"},
+		{abs, abs, "."},
+		{abs, filepath.Join(abs, "sub"), "./sub"},
+		{abs, filepath.Join(abs, "a", "b"), "./a/b"},
 	} {
-		if got := pkgPattern(tc.in); got != tc.want {
-			t.Errorf("pkgPattern(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := pkgPattern(tc.base, tc.pkg); got != tc.want {
+			t.Errorf("pkgPattern(%q, %q) = %q, want %q", tc.base, tc.pkg, got, tc.want)
 		}
+	}
+}
+
+func TestGoTestArgs(t *testing.T) {
+	abs := filepath.Join(string(filepath.Separator), "abs", "mod")
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		target   target
+		fuzztime time.Duration
+		verbose  bool
+		tags     string
+		want     []string
+	}{
+		{
+			name:     "default",
+			dir:      ".",
+			target:   target{Pkg: "sub", Name: "FuzzOne"},
+			fuzztime: 30 * time.Second,
+			want:     []string{"test", "-run", "^$", "-fuzz", "^FuzzOne$", "-fuzztime", "30s", "./sub"},
+		},
+		{
+			name:     "verbose_and_tags",
+			dir:      ".",
+			target:   target{Pkg: ".", Name: "FuzzOne"},
+			fuzztime: 5 * time.Second,
+			verbose:  true,
+			tags:     "extra,slow",
+			want:     []string{"test", "-v", "-tags", "extra,slow", "-run", "^$", "-fuzz", "^FuzzOne$", "-fuzztime", "5s", "."},
+		},
+		{
+			name:     "abs_dir_with_tags",
+			dir:      abs,
+			target:   target{Pkg: filepath.Join(abs, "pkg"), Name: "FuzzAbs"},
+			fuzztime: 10 * time.Second,
+			tags:     "extra",
+			want:     []string{"test", "-tags", "extra", "-run", "^$", "-fuzz", "^FuzzAbs$", "-fuzztime", "10s", "./pkg"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := goTestArgs(tc.dir, tc.target, tc.fuzztime, tc.verbose, tc.tags)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("goTestArgs() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -124,16 +182,6 @@ func TestDiscoverEmpty(t *testing.T) {
 	if len(targets) != 0 {
 		t.Errorf("found %v in an empty tree", targets)
 	}
-}
-
-func compare(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }
 
 func write(t *testing.T, path, content string) {
@@ -203,6 +251,7 @@ func FuzzTagged(f *testing.F) {}
 		{"", "", 0},
 		{"extra", "", 1},
 		{"", "-tags=extra", 1},      // GOFLAGS alone is enough
+		{"", "-tags extra", 1},      // space-separated -tags in GOFLAGS
 		{"extra", "-tags=other", 1}, // -tags adds to GOFLAGS, does not replace it
 	} {
 		t.Setenv("GOFLAGS", tc.goflags)
@@ -246,10 +295,16 @@ func TestGoflagsTags(t *testing.T) {
 	}{
 		{"", nil},
 		{"-tags=a,b", []string{"a", "b"}},
+		{"-tags a,b", []string{"a", "b"}},
+		{"--tags a", []string{"a"}},
 		{"-mod=mod -tags=a", []string{"a"}},
+		{"-mod=mod -tags a", []string{"a"}},
 		{"-tags=a -tags=b", []string{"b"}}, // last wins, as in the go command
+		{"-tags=a -tags b", []string{"b"}},
+		{"-tags a -tags=b", []string{"b"}},
 		{"--tags=a", []string{"a"}},
 		{"-tags=", nil},
+		{"-tags", nil},
 	} {
 		t.Setenv("GOFLAGS", tc.goflags)
 		if got := goflagsTags(); !slices.Equal(got, tc.want) {

@@ -2,9 +2,9 @@
 //
 // Usage:
 //
-//	fuzztape list [dir]
-//	fuzztape run [-time d] [-v] [dir]
-//	fuzztape matrix [dir]
+//	fuzztape list [-tags list] [dir]
+//	fuzztape run [-tags list] [-time d] [-v] [dir]
+//	fuzztape matrix [-tags list] [dir]
 //
 // The go command fuzzes exactly one target, in one package, per
 // invocation: -fuzz takes a regular expression matched against the
@@ -56,6 +56,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -66,9 +67,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 func main() {
@@ -79,17 +82,31 @@ func main() {
 		usage()
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	switch cmd {
+	case "list", "matrix", "run":
+	default:
+		usage()
+	}
 
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	fuzztime := fs.Duration("time", 30*time.Second, "fuzzing budget per target")
-	verbose := fs.Bool("v", false, "pass -v to go test")
 	tags := fs.String("tags", "", "comma-separated build tags, added to those in GOFLAGS")
+	var fuzztime *time.Duration
+	var verbose *bool
+	if cmd == "run" {
+		fuzztime = fs.Duration("time", 30*time.Second, "fuzzing budget per target")
+		verbose = fs.Bool("v", false, "pass -v to go test")
+	}
 	fs.Parse(args)
 
 	dir := "."
-	if rest := fs.Args(); len(rest) > 0 {
+	switch rest := fs.Args(); len(rest) {
+	case 0:
+	case 1:
 		dir = rest[0]
+	default:
+		usage()
 	}
+
 	targets, gaps, err := discover(buildContext(*tags), dir)
 	if err != nil {
 		log("%v", err)
@@ -116,11 +133,9 @@ func main() {
 		}
 		fmt.Println(string(b))
 	case "run":
-		if !run(targets, *fuzztime, *verbose) {
+		if !run(dir, targets, *fuzztime, *verbose, *tags) {
 			os.Exit(1)
 		}
-	default:
-		usage()
 	}
 	if len(gaps) > 0 {
 		// The work that could be done was done and reported. Exiting
@@ -132,17 +147,17 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
-	fuzztape list [packages]
-	fuzztape run [-time d] [-v] [packages]
-	fuzztape matrix [packages]
+	fuzztape list [-tags list] [dir]
+	fuzztape run [-tags list] [-time d] [-v] [dir]
+	fuzztape matrix [-tags list] [dir]
 `)
 	os.Exit(2)
 }
 
-// A Target is one fuzz target: the package directory holding it and the
+// A target is one fuzz target: the package directory holding it and the
 // function name. The JSON field names are what a GitHub Actions matrix
 // entry needs.
-type Target struct {
+type target struct {
 	Pkg  string `json:"pkg"`
 	Name string `json:"name"`
 }
@@ -155,8 +170,8 @@ type Target struct {
 // reported — but the caller is expected to print them and exit non-zero,
 // because a target skipped in silence is indistinguishable from one that
 // passed.
-func discover(ctxt *build.Context, dir string) ([]Target, []string, error) {
-	var targets []Target
+func discover(ctxt *build.Context, dir string) ([]target, []string, error) {
+	var targets []target
 	var gaps []string
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -208,7 +223,7 @@ func discover(ctxt *build.Context, dir string) ([]Target, []string, error) {
 			switch name := fuzzParamPkg(fn); {
 			case name == "":
 			case testing != "" && name == testing:
-				targets = append(targets, Target{Pkg: pkg, Name: fn.Name.Name})
+				targets = append(targets, target{Pkg: pkg, Name: fn.Name.Name})
 			case name == "testing":
 				// *testing.F where testing is not the standard
 				// library: a local package by that name, or a
@@ -219,13 +234,13 @@ func discover(ctxt *build.Context, dir string) ([]Target, []string, error) {
 		}
 		return nil
 	})
-	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].Pkg != targets[j].Pkg {
-			return targets[i].Pkg < targets[j].Pkg
+	slices.SortFunc(targets, func(a, b target) int {
+		if c := cmp.Compare(a.Pkg, b.Pkg); c != 0 {
+			return c
 		}
-		return targets[i].Name < targets[j].Name
+		return cmp.Compare(a.Name, b.Name)
 	})
-	sort.Strings(gaps)
+	slices.Sort(gaps)
 	return targets, gaps, err
 }
 
@@ -248,18 +263,39 @@ func testingName(f *ast.File) string {
 	return ""
 }
 
+// isFuzzName reports whether name matches cmd/go's isTest(name, "Fuzz") rule:
+// "Fuzz" itself, or "Fuzz" followed by a rune that is not a lowercase letter.
+func isFuzzName(name string) bool {
+	if !strings.HasPrefix(name, "Fuzz") {
+		return false
+	}
+	if len(name) == len("Fuzz") {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(name[len("Fuzz"):])
+	return !unicode.IsLower(r)
+}
+
 // fuzzParamPkg reports the package qualifier of fn's sole parameter if fn
 // has the shape go test recognizes for a fuzz target — func FuzzXxx(f
-// *pkg.F), with no receiver and no results — and "" if it does not. The
-// caller decides whether that qualifier names the testing package.
+// *pkg.F), with no receiver, no type parameters, and no results — and ""
+// if it does not. The caller decides whether that qualifier names the
+// testing package.
 func fuzzParamPkg(fn *ast.FuncDecl) string {
-	if fn.Recv != nil || fn.Name == nil || !strings.HasPrefix(fn.Name.Name, "Fuzz") {
+	if fn.Recv != nil || fn.Name == nil || !isFuzzName(fn.Name.Name) {
+		return ""
+	}
+	if fn.Type.TypeParams != nil && fn.Type.TypeParams.NumFields() > 0 {
 		return ""
 	}
 	if fn.Type.Results != nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
 		return ""
 	}
-	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+	field := fn.Type.Params.List[0]
+	if len(field.Names) > 1 {
+		return ""
+	}
+	star, ok := field.Type.(*ast.StarExpr)
 	if !ok {
 		return ""
 	}
@@ -289,11 +325,16 @@ func buildContext(tags string) *build.Context {
 // in it, matching how the go command resolves a repeated flag.
 func goflagsTags() []string {
 	var tags []string
-	for _, f := range strings.Fields(os.Getenv("GOFLAGS")) {
+	fields := strings.Fields(os.Getenv("GOFLAGS"))
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
 		if v, ok := strings.CutPrefix(f, "-tags="); ok {
 			tags = splitTags(v)
 		} else if v, ok := strings.CutPrefix(f, "--tags="); ok {
 			tags = splitTags(v)
+		} else if (f == "-tags" || f == "--tags") && i+1 < len(fields) {
+			i++
+			tags = splitTags(fields[i])
 		}
 	}
 	return tags
@@ -307,38 +348,54 @@ func splitTags(v string) []string {
 	return strings.Split(v, ",")
 }
 
-// pkgPattern turns a directory into the relative package pattern the
-// go command expects.
-func pkgPattern(dir string) string {
-	dir = filepath.ToSlash(dir)
-	if dir == "." || strings.HasPrefix(dir, "./") || strings.HasPrefix(dir, "/") {
-		return dir
+// pkgPattern turns a target package directory into the relative package
+// pattern the go command expects when run from base.
+func pkgPattern(base, pkg string) string {
+	if base != "" {
+		if rel, err := filepath.Rel(base, pkg); err == nil {
+			pkg = rel
+		}
 	}
-	return "./" + dir
+	pkg = filepath.ToSlash(pkg)
+	if pkg == "." || pkg == ".." || strings.HasPrefix(pkg, "./") || strings.HasPrefix(pkg, "../") || filepath.IsAbs(pkg) {
+		return pkg
+	}
+	return "./" + pkg
+}
+
+// goTestArgs constructs the arguments to "go" for fuzzing target t from dir.
+func goTestArgs(dir string, t target, fuzztime time.Duration, verbose bool, tags string) []string {
+	args := []string{"test"}
+	if verbose {
+		args = append(args, "-v")
+	}
+	if tags != "" {
+		args = append(args, "-tags", tags)
+	}
+	args = append(args,
+		"-run", "^$", // no ordinary tests, only the fuzz target
+		"-fuzz", "^"+t.Name+"$",
+		"-fuzztime", fuzztime.String(),
+		pkgPattern(dir, t.Pkg),
+	)
+	return args
 }
 
 // run fuzzes every target in turn and reports whether all passed.
-func run(targets []Target, fuzztime time.Duration, verbose bool) bool {
+func run(dir string, targets []target, fuzztime time.Duration, verbose bool, tags string) bool {
 	type result struct {
-		Target
+		target
 		err error
 		dur time.Duration
 	}
 	results := make([]result, 0, len(targets))
 	for i, t := range targets {
 		fmt.Fprintf(os.Stderr, "fuzztape: [%d/%d] %s %s for %v\n", i+1, len(targets), t.Pkg, t.Name, fuzztime)
-		args := []string{"test"}
-		if verbose {
-			args = append(args, "-v")
-		}
-		args = append(args,
-			"-run", "^$", // no ordinary tests, only the fuzz target
-			"-fuzz", "^"+t.Name+"$",
-			"-fuzztime", fuzztime.String(),
-			pkgPattern(t.Pkg),
-		)
 		start := time.Now()
-		cmd := exec.Command("go", args...)
+		cmd := exec.Command("go", goTestArgs(dir, t, fuzztime, verbose, tags)...)
+		if dir != "" {
+			cmd.Dir = dir
+		}
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		results = append(results, result{t, cmd.Run(), time.Since(start).Round(time.Millisecond)})
 	}
