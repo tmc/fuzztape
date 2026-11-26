@@ -146,6 +146,26 @@ type Machine[S any] struct {
 	Stall time.Duration
 }
 
+// validate checks that m's configuration is well-formed before executing
+// inputs against it.
+func (m Machine[S]) validate() error {
+	if m.Init == nil {
+		return errors.New("fuzztape: Machine.Init is nil")
+	}
+	if len(m.Ops) == 0 {
+		return errors.New("fuzztape: Machine has no Ops")
+	}
+	for i, op := range m.Ops {
+		if op.Apply == nil {
+			if op.Name != "" {
+				return fmt.Errorf("fuzztape: Op %q has nil Apply", op.Name)
+			}
+			return fmt.Errorf("fuzztape: Op[%d] has nil Apply", i)
+		}
+	}
+	return nil
+}
+
 // Fuzz registers the machine as the fuzz function of f. Corpus files,
 // -fuzztime budgets, minimization, and seeds via f.Add behave as for
 // any other fuzz target.
@@ -156,6 +176,10 @@ type Machine[S any] struct {
 // process would be watching the coordinator, which runs no inputs of
 // its own and would look stalled the moment it started orchestrating.
 func (m Machine[S]) Fuzz(f *testing.F) {
+	if err := m.validate(); err != nil {
+		f.Helper()
+		f.Fatal(err)
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		m.runTape(t, data, true, nil, nil, nil)
 	})
@@ -178,6 +202,10 @@ func (m Machine[S]) Fuzz(f *testing.F) {
 // working directory, or a Run reached from another package, reads and
 // writes somewhere else.
 func (m Machine[S]) Run(t *testing.T, iters int) {
+	if err := m.validate(); err != nil {
+		t.Helper()
+		t.Fatal(err)
+	}
 	w := m.startWatchdog()
 	defer w.stop()
 	if !m.replaySeeds(t, w) {

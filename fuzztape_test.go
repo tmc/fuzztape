@@ -744,6 +744,50 @@ func TestMachineRunReplaysSeeds(t *testing.T) {
 	wantAll(t, out, "seed/fuzztape-", "planted violation", "already minimal")
 }
 
+// TestMachineRunValidatesEagerly proves harness misconfigurations fail
+// immediately in Run without shrinking or writing bogus corpus files.
+func TestMachineRunValidatesEagerly(t *testing.T) {
+	if kind := os.Getenv("FUZZTAPE_VALIDATE"); kind != "" {
+		t.Chdir(t.TempDir())
+		var m Machine[int]
+		switch kind {
+		case "nil-init":
+			m = Machine[int]{Name: "FuzzBad", Ops: []Op[int]{{Name: "step", Apply: func(*T, int) {}}}}
+		case "no-ops":
+			m = Machine[int]{Name: "FuzzBad", Init: func(*T) int { return 0 }}
+		case "nil-apply":
+			m = Machine[int]{Name: "FuzzBad", Init: func(*T) int { return 0 }, Ops: []Op[int]{{Name: "step"}}}
+		}
+		m.Run(t, 10)
+		return
+	}
+	for _, tc := range []struct {
+		kind, want string
+	}{
+		{"nil-init", "Init is nil"},
+		{"no-ops", "no Ops"},
+		{"nil-apply", `Op "step" has nil Apply`},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run", "^TestMachineRunValidatesEagerly$", "-test.v")
+			cmd.Env = append(os.Environ(), "FUZZTAPE_VALIDATE="+tc.kind)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("misconfigured Run passed; output:\n%s", out)
+			}
+			s := string(out)
+			if !strings.Contains(s, tc.want) {
+				t.Errorf("output missing %q:\n%s", tc.want, s)
+			}
+			for _, unwanted := range []string{"shrunk failing input", "saved failing input"} {
+				if strings.Contains(s, unwanted) {
+					t.Errorf("misconfigured Run triggered %q:\n%s", unwanted, s)
+				}
+			}
+		})
+	}
+}
+
 // runChild re-runs one of this binary's tests in a child process, so a
 // deliberately failing test does not fail the parent.
 func runChild(t *testing.T, run string) (string, error) {

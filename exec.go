@@ -22,7 +22,21 @@ const (
 	Failed
 )
 
-// A Record is one selected operation in an [Exec] result.
+// String returns the name of the outcome ("applied", "rejected", or "failed").
+func (o Outcome) String() string {
+	switch o {
+	case Applied:
+		return "applied"
+	case Rejected:
+		return "rejected"
+	case Failed:
+		return "failed"
+	default:
+		return fmt.Sprintf("Outcome(%d)", o)
+	}
+}
+
+// A Record is one selected operation in a [Machine.Exec] result.
 type Record struct {
 	// Name is the selected operation's name.
 	Name string
@@ -159,22 +173,30 @@ func panicSite() string {
 	}
 }
 
-// A Result is the history and first failure from [Machine.Exec]. Failure is
-// nil when the machine passed.
+// A Result is the history, op tape offsets, and first failure from
+// [Machine.Exec]. Failure is nil when the machine passed.
+//
+// Splits holds the tape offsets at which the decoded ops begin, plus a
+// terminal offset past the last byte consumed when the sequence ended
+// without reading past the end of the input (matching [Machine.Splits]).
 type Result struct {
 	Records []Record
+	Splits  []int
 	Failure *Failure
 }
 
-// Exec runs data against a fresh system and returns its decoded history and
-// first failure. It does not require a testing.T.
+// Exec runs data against a fresh system and returns its decoded history,
+// op tape offsets, and first failure. It does not require a testing.T.
 //
 // Exec drives the same execution as [Machine.Run] and [Machine.Fuzz] — one
 // decoder, so an input means the same sequence however it is run — but it
 // creates no synctest bubble. Machines that set [Machine.Bubble] must run
 // through Run or Fuzz for the bubble's exit check to happen at all.
 func (m Machine[S]) Exec(data []byte) Result {
-	return m.exec1(data, nil)
+	var splits []int
+	res := m.exec1(data, &splits)
+	res.Splits = splits
+	return res
 }
 
 // exec1 runs one input outside a test, recording tape offsets in splits if it
@@ -408,8 +430,8 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 			}
 		}()
 	}
-	if len(m.Ops) == 0 {
-		e.Errorf("fuzztape: Machine has no Ops")
+	if err := m.validate(); err != nil {
+		e.Errorf("%s", err)
 		return
 	}
 	t.record = func(args string) {

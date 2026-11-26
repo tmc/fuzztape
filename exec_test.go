@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math/rand"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -473,5 +474,82 @@ func TestShrinkPreservesIdentity(t *testing.T) {
 	// bought by refusing every reduction.
 	if got.Message == want.Message {
 		t.Errorf("shrink did not reduce the value at all: still %q", got.Message)
+	}
+}
+
+func TestOutcomeString(t *testing.T) {
+	for _, tc := range []struct {
+		o    Outcome
+		want string
+	}{
+		{Applied, "applied"},
+		{Rejected, "rejected"},
+		{Failed, "failed"},
+		{Outcome(99), "Outcome(99)"},
+	} {
+		if got := tc.o.String(); got != tc.want {
+			t.Errorf("Outcome(%d).String() = %q, want %q", tc.o, got, tc.want)
+		}
+	}
+}
+
+func TestExecSplitsMatchesMachineSplits(t *testing.T) {
+	m := Machine[*counter]{
+		Init: func(t *T) *counter { return &counter{n: t.IntN(4)} },
+		Ops:  clean.Ops,
+	}
+	for _, data := range [][]byte{
+		{},
+		make([]byte, 4),
+		bytes.Repeat([]byte{0xff}, 9),
+		{0, 1, 2, 0, 1, 0},
+	} {
+		want := m.Splits(t, data)
+		got := m.Exec(data).Splits
+		if !slices.Equal(got, want) {
+			t.Errorf("Exec(%x).Splits = %v, want %v", data, got, want)
+		}
+	}
+}
+
+func TestExecValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    Machine[int]
+		want string
+	}{
+		{
+			name: "nil Init",
+			m:    Machine[int]{Ops: []Op[int]{{Name: "step", Apply: func(*T, int) {}}}},
+			want: "Init is nil",
+		},
+		{
+			name: "no Ops",
+			m:    Machine[int]{Init: func(*T) int { return 0 }},
+			want: "no Ops",
+		},
+		{
+			name: "nil Op.Apply named",
+			m:    Machine[int]{Init: func(*T) int { return 0 }, Ops: []Op[int]{{Name: "broken"}}},
+			want: `Op "broken" has nil Apply`,
+		},
+		{
+			name: "nil Op.Apply unnamed",
+			m:    Machine[int]{Init: func(*T) int { return 0 }, Ops: []Op[int]{{}}},
+			want: "Op[0] has nil Apply",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.m.Exec([]byte{0})
+			if res.Failure == nil {
+				t.Fatalf("Exec Failure = nil, want %q", tc.want)
+			}
+			if res.Failure.Phase != Init || res.Failure.Op != -1 {
+				t.Errorf("Failure = %+v, want Init/-1", res.Failure)
+			}
+			if !strings.Contains(res.Failure.Message, tc.want) {
+				t.Errorf("Failure.Message = %q, want substring %q", res.Failure.Message, tc.want)
+			}
+		})
 	}
 }
