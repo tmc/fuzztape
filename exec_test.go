@@ -114,7 +114,7 @@ func TestMachineExecAttribution(t *testing.T) {
 		m := Machine[int]{
 			Init: func(*T) int { return 0 },
 			Ops: []Op[int]{
-				{Name: "skip", Apply: func(t *T, _ int) { t.Reject("not now") }},
+				{Name: "skip", Apply: func(t *T, _ int) { t.Rejectf("not now") }},
 			},
 			MaxOps: 1,
 		}
@@ -159,7 +159,7 @@ func TestExecMatchesTrace(t *testing.T) {
 			{Name: "inc", Weight: 3, Apply: func(_ *T, s *state) { s.n++ }},
 			{Name: "dec", Weight: 1, When: func(s *state) bool { return s.n > 0 },
 				Apply: func(_ *T, s *state) { s.n-- }},
-			{Name: "skip", Apply: func(t *T, _ *state) { t.Reject("never") }},
+			{Name: "skip", Apply: func(t *T, _ *state) { t.Rejectf("never") }},
 			NewRecordedOp("set", func(t *Tape) int { return t.IntN(10) },
 				strconv.Itoa, func(_ *T, s *state, v int) { s.n = v }),
 		},

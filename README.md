@@ -59,7 +59,7 @@ which makes every case a goroutine-leak check as well.
 
 Ops receive a `*fuzztape.T`: the tape they draw from and the failure
 reporting of the test running them. Report a violation with `t.Fatalf`,
-abandon an op that turns out not to apply with `t.Reject`, and assert
+abandon an op that turns out not to apply with `t.Rejectf`, and assert
 what should hold once the sequence has settled from `t.Cleanup`.
 
 ## Subpackages
@@ -139,4 +139,4 @@ implementation.
 The API is not yet stable. It may change without notice before a v1
 tag. v0.2.0 changed `Op.Apply`, `Machine.Init`, and `Machine.Check` to
 take a `*fuzztape.T`, and `Apply` no longer returns an error — use
-`t.Reject`.
+`t.Rejectf`.

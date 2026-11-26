@@ -349,7 +349,7 @@ func TestMachineInitDrawsFromTape(t *testing.T) {
 	}
 }
 
-// rejecter proves Reject stops the op without failing the test and
+// rejecter proves Rejectf stops the op without failing the test and
 // without ending the sequence: "bump" rejects on an odd counter, and
 // the reason reaches the op log.
 var rejecter = Machine[*counter]{
@@ -357,7 +357,7 @@ var rejecter = Machine[*counter]{
 	Ops: []Op[*counter]{
 		{Name: "bump", Apply: func(t *T, c *counter) {
 			if c.n%2 == 1 {
-				t.Reject("counter is odd: %d", c.n)
+				t.Rejectf("counter is odd: %d", c.n)
 			}
 			c.n += 2
 		}},
@@ -371,7 +371,7 @@ func TestMachineReject(t *testing.T) {
 	// survives it.
 	rejecter.runOps(t, []byte{0, 1, 0, 0}, &applied, nil, nil)
 	if t.Failed() {
-		t.Fatal("Reject failed the test; it must not")
+		t.Fatal("Rejectf failed the test; it must not")
 	}
 	joined := strings.Join(applied, " | ")
 	if !strings.Contains(joined, "rejected: counter is odd") {
@@ -383,7 +383,7 @@ func TestMachineReject(t *testing.T) {
 }
 
 // TestMachineRejectRestoresState proves a rejection does not leak its
-// unwinding into the next op: the panic Reject uses is caught per op.
+// unwinding into the next op: the panic Rejectf uses is caught per op.
 func TestMachineRejectRestoresState(t *testing.T) {
 	var applied []string
 	rejecter.runOps(t, bytes.Repeat([]byte{1, 0}, 8), &applied, nil, nil)

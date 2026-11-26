@@ -16,7 +16,7 @@ type Outcome uint8
 const (
 	// Applied reports an op that returned without reporting a failure.
 	Applied Outcome = iota
-	// Rejected reports an op that called [T.Reject].
+	// Rejected reports an op that called [T.Rejectf].
 	Rejected
 	// Failed reports an op whose Apply reported a failure or panicked.
 	Failed
@@ -46,7 +46,7 @@ type Record struct {
 	// Outcome reports whether the selected operation applied, rejected,
 	// or failed.
 	Outcome Outcome
-	// Reason is the reason a [Rejected] op gave to [T.Reject], or
+	// Reason is the reason a [Rejected] op gave to [T.Rejectf], or
 	// "panicked: v" for an op that panicked. It is empty otherwise; in
 	// particular, an op that failed through [T.Errorf] leaves it empty,
 	// because that failure is reported in [Result.Failure].
@@ -376,7 +376,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 	// saved as a seed. Under a test Fatalf ends a sequence with a
 	// Goexit, which is not a panic, so it is unaffected; outside one it
 	// unwinds with fatal, which is swallowed here because Errorf has
-	// already recorded the failure. Reject's panic is unwound by apply
+	// already recorded the failure. Rejectf's panic is unwound by apply
 	// below this.
 	//
 	// This is registered before every other defer here, so it runs
@@ -392,7 +392,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 			return
 		}
 		if _, isReject := r.(rejected); isReject {
-			e.Errorf("fuzztape: Reject called outside an op, in %s", e.where())
+			e.Errorf("fuzztape: Rejectf called outside an op, in %s", e.where())
 			return
 		}
 		e.panicked(r, panicSite())

@@ -77,7 +77,7 @@ into a goroutine-leak check.
 Ops, Init, and Check receive a [T]: the tape they draw from and the
 failure reporting of the test running them, in one value. Report a
 violation with [T.Fatalf], abandon an op that turns out not to apply
-with [T.Reject], and assert what should hold once the sequence has
+with [T.Rejectf], and assert what should hold once the sequence has
 settled from [T.Cleanup].
 
 T embeds *Tape but not *testing.T, which is deliberate. Embedding the

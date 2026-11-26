@@ -29,7 +29,7 @@ type Op[S any] struct {
 	// nil means always. Ops with a false When are not selected.
 	When func(s S) bool
 	// Apply performs the op, drawing parameters from t. An op that
-	// turns out not to apply once it has drawn calls [T.Reject]; an op
+	// turns out not to apply once it has drawn calls [T.Rejectf]; an op
 	// that finds a violation calls [T.Fatalf] or [T.Errorf].
 	//
 	// A panic out of Apply — from the system under test, most often —

@@ -24,7 +24,7 @@ var machine = fuzztape.Machine[*stack]{
 			func(_ *fuzztape.T, s *stack, v int) { s.xs = append(s.xs, v) }),
 		{Name: "pop", Apply: func(t *fuzztape.T, s *stack) {
 			if len(s.xs) == 0 {
-				t.Reject("empty")
+				t.Rejectf("empty")
 			}
 			s.xs = s.xs[:len(s.xs)-1]
 		}},
@@ -149,7 +149,7 @@ func Example() {
 				func(_ *fuzztape.T, c *counter, v int) { c.n += v }),
 			{Name: "reset", Apply: func(t *fuzztape.T, c *counter) {
 				if c.n == 0 {
-					t.Reject("already zero")
+					t.Rejectf("already zero")
 				}
 				c.n = 0
 			}},

@@ -11,7 +11,7 @@ import (
 func TestWrap(t *testing.T) {
 	ops := []fuzztape.Op[*int]{
 		{Name: "inc", Apply: func(t *fuzztape.T, n *int) { *n++ }},
-		{Name: "full", Apply: func(t *fuzztape.T, n *int) { t.Reject("full") }},
+		{Name: "full", Apply: func(t *fuzztape.T, n *int) { t.Rejectf("full") }},
 		{Name: "gated", When: func(*int) bool { return false },
 			Apply: func(t *fuzztape.T, n *int) {}},
 	}

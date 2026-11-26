@@ -82,7 +82,7 @@ func newTestT(tb testing.TB, data []byte) *T {
 //
 // A [Machine] builds its own T for every input, so this is for
 // exercising an op directly in an ordinary test, without a machine
-// around it. A [T.Reject] on a T built here panics out to the caller,
+// around it. A [T.Rejectf] on a T built here panics out to the caller,
 // because there is no op loop to unwind into, and its [T.Cleanup]
 // functions run when tb finishes rather than at the end of a sequence,
 // because there is no sequence.
@@ -92,25 +92,25 @@ func NewT(tb testing.TB, data []byte) *T {
 	return t
 }
 
-// rejected is the panic value [T.Reject] unwinds an op with. It never
+// rejected is the panic value [T.Rejectf] unwinds an op with. It never
 // escapes runOps.
 type rejected struct{}
 
-// Reject abandons the current op: the op did not apply, the sequence
+// Rejectf abandons the current op: the op did not apply, the sequence
 // continues with the next one, and the reason appears in the op log of
 // a failing input. It does not return.
 //
-// Reject is for an op that turns out not to be applicable once it has
+// Rejectf is for an op that turns out not to be applicable once it has
 // drawn its parameters — a queue that is full, an ID that is already
 // taken. It is not a failure report: use [T.Fatalf] or [T.Errorf] for
 // that. Prefer [Op.When] where applicability can be decided before
 // drawing anything, because an op rejected after drawing has still
 // consumed tape.
 //
-// Like [T.Fatalf], call Reject only from the goroutine running the op
+// Like [T.Fatalf], call Rejectf only from the goroutine running the op
 // sequence. Calling it from another goroutine races on internal state
 // and crashes the process with an unrecovered panic.
-func (t *T) Reject(format string, args ...any) {
+func (t *T) Rejectf(format string, args ...any) {
 	t.reason = fmt.Sprintf(format, args...)
 	panic(rejected{})
 }
@@ -202,7 +202,7 @@ func (t *T) Name() string { return t.report.Name() }
 func (t *T) TempDir() string { return t.report.TempDir() }
 
 // apply runs op against s, reporting whether it applied and, if not,
-// the reason it gave to [T.Reject]. A panic that is not a rejection
+// the reason it gave to [T.Rejectf]. A panic that is not a rejection
 // keeps propagating, out to runOps, which turns it into a failure with
 // the stack it was raised on; a Goexit from Fatalf is not a panic at
 // all. Neither is swallowed here.
