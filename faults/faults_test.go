@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"math/rand/v2"
 	"testing"
 
@@ -116,6 +117,34 @@ func TestFailReadOpNoErrsPanics(t *testing.T) {
 		}
 	}()
 	faults.FailReadOp("bad", func(s *sut) *faults.ReadWriter { return nil })
+}
+
+func TestDropOpInvalidMaxPanics(t *testing.T) {
+	get := func(s *sut) *faults.ReadWriter { return s.rw }
+	for _, max := range []int{0, -1, math.MinInt} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("DropOp with max=%d did not panic", max)
+				}
+			}()
+			faults.DropOp("drop", get, max)
+		}()
+	}
+}
+
+func TestShortWriteOpInvalidMaxPanics(t *testing.T) {
+	get := func(s *sut) *faults.ReadWriter { return s.rw }
+	for _, max := range []int{-1, math.MinInt, math.MaxInt} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("ShortWriteOp with max=%d did not panic", max)
+				}
+			}()
+			faults.ShortWriteOp("short", get, max, errInjected)
+		}()
+	}
 }
 
 // TestSleepOpBubble runs SleepOp inside a Bubble machine: hour-scale

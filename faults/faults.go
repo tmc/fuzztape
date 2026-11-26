@@ -11,6 +11,7 @@ package faults
 
 import (
 	"io"
+	"math"
 	"sync"
 	"time"
 
@@ -166,8 +167,11 @@ func FailWriteOp[S any](name string, get func(S) *ReadWriter, errs ...error) fuz
 }
 
 // DropOp returns an op that arms the ReadWriter selected by get to
-// silently discard its next 1 to max Writes.
+// silently discard its next 1 to max Writes. It panics if max <= 0.
 func DropOp[S any](name string, get func(S) *ReadWriter, max int) fuzztape.Op[S] {
+	if max <= 0 {
+		panic("faults: DropOp with non-positive max")
+	}
 	return fuzztape.Op[S]{
 		Name: name,
 		Apply: func(t *fuzztape.T, s S) {
@@ -180,11 +184,15 @@ func DropOp[S any](name string, get func(S) *ReadWriter, max int) fuzztape.Op[S]
 // pass a prefix of 0 to max bytes of its next Write to the wrapped
 // endpoint and then return one of errs. Both the prefix length and the
 // error come off the tape, so a shrunk failure names the record that was
-// torn and where. It panics if errs is empty or max is negative.
+// torn and where. It panics if errs is empty, max is negative, or max
+// is [math.MaxInt].
 func ShortWriteOp[S any](name string, get func(S) *ReadWriter, max int, errs ...error) fuzztape.Op[S] {
 	mustErrs(errs)
 	if max < 0 {
 		panic("faults: ShortWriteOp with negative max")
+	}
+	if max == math.MaxInt {
+		panic("faults: ShortWriteOp with max == math.MaxInt")
 	}
 	return fuzztape.Op[S]{
 		Name: name,
