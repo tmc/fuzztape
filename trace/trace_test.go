@@ -111,7 +111,7 @@ var machine = fuzztape.Machine[*counter]{
 
 	cmd := exec.Command(goTool, "test", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated test did not build and pass: %v\n%s", err, out)
 	}
@@ -145,5 +145,28 @@ func TestReproMultilineOp(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated source missing %q:\n%s", want, src)
 		}
+	}
+}
+
+func TestWrite(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good_test.go")
+	if err := trace.Write(good, "p", "TestGood", "m", []byte{1}, []string{"inc"}); err != nil {
+		t.Fatalf("Write valid: %v", err)
+	}
+	b, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), good, b, parser.AllErrors); err != nil {
+		t.Fatalf("written file does not parse: %v\n%s", err, b)
+	}
+
+	bad := filepath.Join(dir, "bad_test.go")
+	if err := trace.Write(bad, "p", "not a valid func", "m", []byte{1}, nil); err == nil {
+		t.Fatal("Write accepted invalid Go identifier")
+	}
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Errorf("Write created %s on format error (stat err: %v)", bad, err)
 	}
 }
