@@ -429,7 +429,7 @@ func (m Machine[S]) runOps(tb *testing.T, data []byte, applied *[]string, splits
 		reporter: testReporter{tb: tb},
 		result:   &result,
 		stacks:   true,
-		phase:    Init,
+		phase:    PhaseInit,
 		op:       -1,
 	}
 	// Registered before exec runs, so the history and the result are

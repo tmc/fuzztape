@@ -78,7 +78,7 @@ func TestMachineExecAttribution(t *testing.T) {
 			MaxOps: 2,
 		}
 		got := m.Exec([]byte{0, 0})
-		want := &Failure{Phase: Apply, Op: 0, Message: "apply failure"}
+		want := &Failure{Phase: PhaseApply, Op: 0, Message: "apply failure"}
 		if !sameFailure(got.Failure, want) {
 			t.Errorf("Exec failure = %+v, want %+v", got.Failure, want)
 		}
@@ -101,7 +101,7 @@ func TestMachineExecAttribution(t *testing.T) {
 			MaxOps: 2,
 		}
 		got := m.Exec([]byte{0, 0})
-		want := &Failure{Phase: Check, Op: 1, Message: "check failure"}
+		want := &Failure{Phase: PhaseCheck, Op: 1, Message: "check failure"}
 		if !sameFailure(got.Failure, want) {
 			t.Errorf("Exec failure = %+v, want %+v", got.Failure, want)
 		}
@@ -136,7 +136,7 @@ func TestMachineExecAttribution(t *testing.T) {
 			Ops: []Op[int]{{Name: "step", Apply: func(*T, int) {}}},
 		}
 		got := m.Exec(nil)
-		want := &Failure{Phase: Init, Op: -1, Message: "init failure"}
+		want := &Failure{Phase: PhaseInit, Op: -1, Message: "init failure"}
 		if !sameFailure(got.Failure, want) {
 			t.Errorf("Exec failure = %+v, want %+v", got.Failure, want)
 		}
@@ -217,7 +217,7 @@ func TestExecPanicIsAFailure(t *testing.T) {
 		MaxOps: 1,
 	}
 	got := m.Exec([]byte{0})
-	if got.Failure == nil || got.Failure.Phase != Apply || got.Failure.Op != 0 {
+	if got.Failure == nil || got.Failure.Phase != PhaseApply || got.Failure.Op != 0 {
 		t.Fatalf("Exec failure = %+v, want an apply failure at op 0", got.Failure)
 	}
 	if !strings.Contains(got.Failure.Message, "kaboom") {
@@ -256,8 +256,8 @@ func TestConcurrentErrorf(t *testing.T) {
 	if got.Failure == nil {
 		t.Fatal("Exec Failure = nil, want the first worker's report")
 	}
-	if got.Failure.Phase != Apply {
-		t.Errorf("Failure.Phase = %v, want %v", got.Failure.Phase, Apply)
+	if got.Failure.Phase != PhaseApply {
+		t.Errorf("Failure.Phase = %v, want %v", got.Failure.Phase, PhaseApply)
 	}
 	if got.Records[0].Outcome != Failed {
 		t.Errorf("record Outcome = %v, want %v", got.Records[0].Outcome, Failed)
@@ -342,9 +342,9 @@ func TestPrimaryFailureBeforeCleanup(t *testing.T) {
 		cleanup func(*T)
 		want    Phase
 	}{
-		{"panic only", nil, Apply},
-		{"panic then reporting cleanup", func(ft *T) { ft.Errorf("cleanup noticed") }, Apply},
-		{"panic inside cleanup", func(ft *T) { panic("cleanup exploded") }, Cleanup},
+		{"panic only", nil, PhaseApply},
+		{"panic then reporting cleanup", func(ft *T) { ft.Errorf("cleanup noticed") }, PhaseApply},
+		{"panic inside cleanup", func(ft *T) { panic("cleanup exploded") }, PhaseCleanup},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := machine(tt.cleanup).Exec([]byte{0})
@@ -544,8 +544,8 @@ func TestExecValidation(t *testing.T) {
 			if res.Failure == nil {
 				t.Fatalf("Exec Failure = nil, want %q", tc.want)
 			}
-			if res.Failure.Phase != Init || res.Failure.Op != -1 {
-				t.Errorf("Failure = %+v, want Init/-1", res.Failure)
+			if res.Failure.Phase != PhaseInit || res.Failure.Op != -1 {
+				t.Errorf("Failure = %+v, want PhaseInit/-1", res.Failure)
 			}
 			if !strings.Contains(res.Failure.Message, tc.want) {
 				t.Errorf("Failure.Message = %q, want substring %q", res.Failure.Message, tc.want)

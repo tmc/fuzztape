@@ -57,21 +57,21 @@ type Record struct {
 type Phase string
 
 const (
-	// Init is the phase that constructs the system under test.
-	Init Phase = "init"
-	// Apply is the phase that applies a selected op.
-	Apply Phase = "apply"
-	// Check is the phase that checks the invariant after an op.
-	Check Phase = "check"
-	// Cleanup is the phase that runs input cleanups.
-	Cleanup Phase = "cleanup"
+	// PhaseInit is the phase that constructs the system under test.
+	PhaseInit Phase = "init"
+	// PhaseApply is the phase that applies a selected op.
+	PhaseApply Phase = "apply"
+	// PhaseCheck is the phase that checks the invariant after an op.
+	PhaseCheck Phase = "check"
+	// PhaseCleanup is the phase that runs input cleanups.
+	PhaseCleanup Phase = "cleanup"
 )
 
 // A Failure is the first failure reported while executing a machine.
 //
-// Op is -1 for [Init]. For [Apply], it is the index of the failed record.
-// For [Check], it is the index of the record after which the check ran. For
-// [Cleanup], it is the last record's index, or -1 when no op applied. A panic
+// Op is -1 for [PhaseInit]. For [PhaseApply], it is the index of the failed record.
+// For [PhaseCheck], it is the index of the record after which the check ran. For
+// [PhaseCleanup], it is the last record's index, or -1 when no op applied. A panic
 // is reported in the phase in which it was raised.
 type Failure struct {
 	Phase   Phase
@@ -205,7 +205,7 @@ func (m Machine[S]) Exec(data []byte) Result {
 func (m Machine[S]) exec1(data []byte, splits *[]int) Result {
 	var result Result
 	r := new(execReporter)
-	e := &execution[S]{reporter: r, result: &result, phase: Init, op: -1}
+	e := &execution[S]{reporter: r, result: &result, phase: PhaseInit, op: -1}
 	defer r.removeDirs()
 	m.exec(&T{Tape: New(data), report: e}, e, splits)
 	return result
@@ -248,7 +248,7 @@ func (e *execution[S]) fail(site, format string, args ...any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.failed = true
-	if e.phase == Apply && e.record != nil {
+	if e.phase == PhaseApply && e.record != nil {
 		e.record.Outcome = Failed
 	}
 	if e.result.Failure == nil {
@@ -288,17 +288,17 @@ func (e *execution[S]) where() string {
 
 func (e *execution[S]) whereLocked() string {
 	switch e.phase {
-	case Apply:
+	case PhaseApply:
 		if e.record != nil {
 			return e.record.Name
 		}
 		return "Apply"
-	case Check:
+	case PhaseCheck:
 		if e.record != nil {
 			return "Check after " + e.record.Name
 		}
 		return "Check"
-	case Cleanup:
+	case PhaseCleanup:
 		return "cleanup"
 	default:
 		return "Init"
@@ -310,7 +310,7 @@ func (e *execution[S]) whereLocked() string {
 func (e *execution[S]) panicked(r any, site string) {
 	e.mu.Lock()
 	where := e.whereLocked()
-	if e.phase == Apply && e.record != nil {
+	if e.phase == PhaseApply && e.record != nil {
 		e.record.Outcome = Failed
 		e.record.Reason = fmt.Sprintf("panicked: %v", r)
 	} else {
@@ -322,7 +322,7 @@ func (e *execution[S]) panicked(r any, site string) {
 	// cleanup's claim so the first failure is the one that caused the
 	// rest. A panic raised inside a cleanup keeps its own attribution,
 	// because then this is the cleanup phase too.
-	if f := e.result.Failure; f != nil && f.Phase == Cleanup && e.phase != Cleanup {
+	if f := e.result.Failure; f != nil && f.Phase == PhaseCleanup && e.phase != PhaseCleanup {
 		e.result.Failure = nil
 	}
 	e.mu.Unlock()
@@ -408,7 +408,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		// and the phase is restored below.
 		e.mu.Lock()
 		phase, op := e.phase, e.op
-		e.phase, e.op = Cleanup, len(e.result.Records)-1
+		e.phase, e.op = PhaseCleanup, len(e.result.Records)-1
 		e.mu.Unlock()
 		t.runCleanups()
 		e.mu.Lock()
@@ -443,7 +443,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 	}
 
 	e.mu.Lock()
-	e.phase, e.op = Init, -1
+	e.phase, e.op = PhaseInit, -1
 	e.mu.Unlock()
 	s := m.Init(t)
 	maxOps := m.MaxOps
@@ -482,7 +482,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		e.mu.Lock()
 		e.result.Records = append(e.result.Records, Record{Name: op.Name, Outcome: Applied})
 		e.record = &e.result.Records[len(e.result.Records)-1]
-		e.phase, e.op, e.failed = Apply, len(e.result.Records)-1, false
+		e.phase, e.op, e.failed = PhaseApply, len(e.result.Records)-1, false
 		e.mu.Unlock()
 		reason, ok := apply(t, op, s)
 		e.mu.Lock()
@@ -498,7 +498,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		}
 		if m.Check != nil {
 			e.mu.Lock()
-			e.phase, e.failed = Check, false
+			e.phase, e.failed = PhaseCheck, false
 			e.mu.Unlock()
 			m.Check(t, s)
 		}
