@@ -64,11 +64,12 @@ type Scheduler struct {
 	mu sync.Mutex
 	// parked is kept sorted by id, so the index the tape draws in Step
 	// names the same goroutine however the runtime ordered the parks.
-	parked  []parked
-	pending int // started by Go, not yet at its first park
-	spawned int // total started by Go; the last id handed out
-	running int // id of the goroutine Step released most recently
-	order   []string
+	parked      []parked
+	pending     int    // started by Go, not yet at its first park
+	spawned     int    // total started by Go; the last id handed out
+	running     int    // id of the goroutine Step released most recently
+	runningName string // name of the goroutine Step released most recently
+	order       []string
 }
 
 // parked is a goroutine waiting for the scheduler to release it.
@@ -87,6 +88,12 @@ type parked struct {
 // exit check would report it as a leak, which it is not. A goroutine
 // blocked on something the scheduler does not control is a different
 // matter, and the exit check should — and still does — report it.
+//
+// Because [fuzztape.T.Cleanup] runs in last-in, first-out order, call
+// New after registering any cleanup-time assertion that inspects
+// settled state (such as a resource ledger check or linearizability
+// assertion). That ensures [Scheduler.Settle] drains scheduled
+// goroutines before those assertions run.
 func New(t *fuzztape.T) *Scheduler {
 	s := &Scheduler{t: t}
 	t.Cleanup(s.Settle)
@@ -135,9 +142,9 @@ func (s *Scheduler) Go(name string, f func()) {
 // scheduler built on scheduling points can order.
 func (s *Scheduler) Yield() {
 	s.mu.Lock()
-	id := s.running
+	id, name := s.running, s.runningName
 	s.mu.Unlock()
-	s.park(id, "yield", false)
+	s.park(id, name, false)
 }
 
 // park adds the calling goroutine to the parked set and blocks it.
@@ -203,6 +210,7 @@ func (s *Scheduler) Step() bool {
 	p := s.parked[i]
 	s.parked = slices.Delete(s.parked, i, i+1)
 	s.running = p.id
+	s.runningName = p.name
 	s.order = append(s.order, p.name)
 	s.mu.Unlock()
 

@@ -261,6 +261,31 @@ func TestSpawnOrderIsReproducible(t *testing.T) {
 	}
 }
 
+// TestOrderPreservesNameAcrossYield checks that Order reports the
+// goroutine's name both on its initial release and after Yield.
+func TestOrderPreservesNameAcrossYield(t *testing.T) {
+	var order []string
+	m := fuzztape.Machine[*sched.Scheduler]{
+		Bubble: true,
+		Init: func(ft *fuzztape.T) *sched.Scheduler {
+			var s *sched.Scheduler
+			ft.Cleanup(func() { order = s.Order() })
+			s = sched.New(ft)
+			s.Go("worker", func() {
+				s.Yield()
+			})
+			return s
+		},
+		Ops: []fuzztape.Op[*sched.Scheduler]{
+			sched.StepOp("step", func(s *sched.Scheduler) *sched.Scheduler { return s }),
+		},
+	}
+	m.Replay(t, nil)
+	if len(order) != 2 || order[0] != "worker" || order[1] != "worker" {
+		t.Errorf("Order() = %v, want [worker worker]", order)
+	}
+}
+
 // replay runs input once against a fresh account and returns the
 // schedule and balance it ended with.
 func replay(t *testing.T, input []byte) (schedule string, balance int) {
