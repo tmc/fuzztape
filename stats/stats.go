@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"testing"
 
 	"github.com/tmc/fuzztape"
 )
@@ -79,10 +78,9 @@ func (r *Report) Missing() []string {
 
 // Log writes per-op applied and rejected counts to t and flags ops
 // that never applied. It is typically called once after Machine.Run,
-// or from a cleanup registered in Init. It takes a [testing.TB] so
-// that both callers can reach it: the outer *testing.T, and a
-// fuzztape.T through its Cleanup.
-func (r *Report) Log(t testing.TB) {
+// or from a cleanup registered in Init. Both *testing.T (and
+// testing.TB) and *fuzztape.T satisfy t.
+func (r *Report) Log(t interface{ Logf(string, ...any) }) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i, name := range r.names {

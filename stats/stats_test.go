@@ -47,6 +47,28 @@ func TestWrap(t *testing.T) {
 	report.Log(t)
 }
 
+func TestReportLogWithFuzztapeT(t *testing.T) {
+	ops := []fuzztape.Op[*int]{
+		{Name: "inc", Apply: func(t *fuzztape.T, n *int) { *n++ }},
+	}
+	wrapped, report := stats.Wrap(ops)
+	logged := false
+	m := fuzztape.Machine[*int]{
+		Init: func(ft *fuzztape.T) *int {
+			ft.Cleanup(func() {
+				report.Log(ft)
+				logged = true
+			})
+			return new(int)
+		},
+		Ops: wrapped,
+	}
+	m.Run(t, 5)
+	if !logged {
+		t.Fatal("Cleanup did not run report.Log(*fuzztape.T)")
+	}
+}
+
 // TestWrapPreservesEncoding pins that wrapping does not change how the
 // tape decodes: the wrapped and unwrapped machines apply the same
 // sequence for the same input.
