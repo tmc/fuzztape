@@ -95,6 +95,32 @@ func TestDelete(t *testing.T) {
 	if got := splice.Delete(data, splits, 0, 3); len(got) != 0 {
 		t.Errorf("Delete(all) = %x, want empty", got)
 	}
+	if got := splice.Delete(data, splits, 1, 1); !bytes.Equal(got, data) {
+		t.Errorf("Delete(1, 1) = %x, want %x", got, data)
+	}
+}
+
+func TestDeleteInvalidRangePanics(t *testing.T) {
+	data := []byte{1, 2, 3}
+	splits := counter.Splits(t, data) // [0, 1, 2, 3]
+	for _, tc := range []struct {
+		name string
+		i, j int
+	}{
+		{"negative i", -1, 1},
+		{"i > j", 2, 1},
+		{"j out of bounds", 0, len(splits)},
+		{"both out of bounds", -1, len(splits)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("Delete(%d, %d) did not panic", tc.i, tc.j)
+				}
+			}()
+			splice.Delete(data, splits, tc.i, tc.j)
+		})
+	}
 }
 
 // TestSplitsNoPhantomBoundary pins the fix for the gated-op case: when

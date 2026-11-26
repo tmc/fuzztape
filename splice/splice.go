@@ -20,13 +20,17 @@
 // prefixes are preserved exactly.
 package splice
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 // Cross returns every crossover of a and b: for each op boundary i of
 // a and j of b, the input a[:i] + b[j:]. Splits come from
-// Machine.Splits and must include the terminal offset, as Splits
-// returns them. Degenerate combinations — empty, all of a, all of b —
-// are omitted, as are duplicates.
+// Machine.Splits; a terminal offset is included only when the sequence
+// ended cleanly rather than running out mid-op, so Cross only grafts
+// onto genuine op boundaries. Degenerate combinations — empty, all of
+// a, all of b — are omitted, as are duplicates.
 func Cross(a []byte, aSplits []int, b []byte, bSplits []int) [][]byte {
 	var out [][]byte
 	seen := make(map[string]bool)
@@ -50,7 +54,10 @@ func Cross(a []byte, aSplits []int, b []byte, bSplits []int) [][]byte {
 }
 
 // Delete returns data with the ops in [i, j) removed, where i and j
-// index splits. It panics if the range is invalid.
+// index splits. It panics if i < 0, j < i, or j >= len(splits).
 func Delete(data []byte, splits []int, i, j int) []byte {
+	if i < 0 || j < i || j >= len(splits) {
+		panic(fmt.Sprintf("splice: Delete range [%d, %d) out of bounds for %d splits", i, j, len(splits)))
+	}
 	return slices.Concat(data[:splits[i]], data[splits[j]:])
 }
