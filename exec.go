@@ -259,11 +259,23 @@ func (e *execution[S]) Fatalf(format string, args ...any) {
 // where names the part of the machine currently running, for a panic message
 // and for the history line that reports it.
 func (e *execution[S]) where() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.whereLocked()
+}
+
+func (e *execution[S]) whereLocked() string {
 	switch e.phase {
 	case Apply:
-		return e.record.Name
+		if e.record != nil {
+			return e.record.Name
+		}
+		return "Apply"
 	case Check:
-		return "Check after " + e.record.Name
+		if e.record != nil {
+			return "Check after " + e.record.Name
+		}
+		return "Check"
 	case Cleanup:
 		return "cleanup"
 	default:
@@ -274,7 +286,8 @@ func (e *execution[S]) where() string {
 // panicked reports a panic raised at site as an ordinary failure of the
 // current phase.
 func (e *execution[S]) panicked(r any, site string) {
-	where := e.where()
+	e.mu.Lock()
+	where := e.whereLocked()
 	if e.phase == Apply && e.record != nil {
 		e.record.Outcome = Failed
 		e.record.Reason = fmt.Sprintf("panicked: %v", r)
@@ -287,7 +300,6 @@ func (e *execution[S]) panicked(r any, site string) {
 	// cleanup's claim so the first failure is the one that caused the
 	// rest. A panic raised inside a cleanup keeps its own attribution,
 	// because then this is the cleanup phase too.
-	e.mu.Lock()
 	if f := e.result.Failure; f != nil && f.Phase == Cleanup && e.phase != Cleanup {
 		e.result.Failure = nil
 	}
@@ -304,6 +316,8 @@ func (e *execution[S]) panicked(r any, site string) {
 
 // applied renders the history as the op-sequence lines a failing input logs.
 func (e *execution[S]) applied() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	out := make([]string, 0, len(e.result.Records)+1)
 	for _, r := range e.result.Records {
 		switch {
@@ -370,10 +384,14 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		// the last op; one that was already unwinding keeps its own
 		// attribution, because runCleanups returns normally under it
 		// and the phase is restored below.
+		e.mu.Lock()
 		phase, op := e.phase, e.op
 		e.phase, e.op = Cleanup, len(e.result.Records)-1
+		e.mu.Unlock()
 		t.runCleanups()
+		e.mu.Lock()
 		e.phase, e.op = phase, op
+		e.mu.Unlock()
 	}()
 	if splits != nil {
 		// The terminal offset is recorded only when the sequence ended
@@ -395,12 +413,16 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 		return
 	}
 	t.record = func(args string) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
 		if e.record != nil {
 			e.record.Args = args
 		}
 	}
 
+	e.mu.Lock()
 	e.phase, e.op = Init, -1
+	e.mu.Unlock()
 	s := m.Init(t)
 	maxOps := m.MaxOps
 	if maxOps <= 0 {
@@ -466,6 +488,7 @@ func (m Machine[S]) exec(t *T, e *execution[S], splits *[]int) {
 // is no test log to write to. Its one job is the temporary directories
 // [T.TempDir] hands out, which no testing.TB is present to remove.
 type execReporter struct {
+	mu   sync.Mutex
 	dirs []string
 }
 
@@ -490,12 +513,18 @@ func (r *execReporter) TempDir() string {
 		// is the reporter's own failure, not the phase's.
 		panic(fmt.Sprintf("fuzztape: create temp dir: %v", err))
 	}
+	r.mu.Lock()
 	r.dirs = append(r.dirs, dir)
+	r.mu.Unlock()
 	return dir
 }
 
 func (r *execReporter) removeDirs() {
-	for i := len(r.dirs) - 1; i >= 0; i-- {
-		_ = os.RemoveAll(r.dirs[i])
+	r.mu.Lock()
+	dirs := r.dirs
+	r.dirs = nil
+	r.mu.Unlock()
+	for i := len(dirs) - 1; i >= 0; i-- {
+		_ = os.RemoveAll(dirs[i])
 	}
 }

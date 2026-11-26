@@ -2,6 +2,7 @@ package fuzztape
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -17,15 +18,19 @@ import (
 // to expose reporting without them. Everything T does forward reports
 // the caller's line, not fuzztape's.
 //
+// The zero value of T is not usable; obtain one from a [Machine] or [NewT].
+//
 // A T is valid only for the duration of the input it was created for.
 // Retaining one past the op sequence that received it, or using one
 // from another goroutine after that sequence ends, is a bug.
 type T struct {
 	*Tape
 
-	report   reporter
-	record   func(string)
-	reason   string
+	report reporter
+	record func(string)
+	reason string
+
+	mu       sync.Mutex
 	cleanups []func()
 }
 
@@ -101,6 +106,10 @@ type rejected struct{}
 // that. Prefer [Op.When] where applicability can be decided before
 // drawing anything, because an op rejected after drawing has still
 // consumed tape.
+//
+// Like [T.Fatalf], call Reject only from the goroutine running the op
+// sequence. Calling it from another goroutine races on internal state
+// and crashes the process with an unrecovered panic.
 func (t *T) Reject(format string, args ...any) {
 	t.reason = fmt.Sprintf(format, args...)
 	panic(rejected{})
@@ -163,17 +172,24 @@ func (t *T) Helper() {
 // check, which is where a goroutine started by [Machine.Init] must be
 // stopped: one stopped on the outer test's cleanup is still blocked at
 // exit and fails every case.
-func (t *T) Cleanup(f func()) { t.cleanups = append(t.cleanups, f) }
+func (t *T) Cleanup(f func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cleanups = append(t.cleanups, f)
+}
 
 // runCleanups runs the registered cleanups, last first. Each remaining
 // cleanup is deferred before the current one runs, so one that panics
 // or fails the test does not strand the rest.
 func (t *T) runCleanups() {
+	t.mu.Lock()
 	if len(t.cleanups) == 0 {
+		t.mu.Unlock()
 		return
 	}
 	f := t.cleanups[len(t.cleanups)-1]
 	t.cleanups = t.cleanups[:len(t.cleanups)-1]
+	t.mu.Unlock()
 	defer t.runCleanups()
 	f()
 }

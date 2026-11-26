@@ -263,6 +263,62 @@ func TestConcurrentErrorf(t *testing.T) {
 	}
 }
 
+// TestConcurrentTempDirCleanupAndErrorf exercises concurrent T.TempDir,
+// T.Cleanup, and T.Errorf calls from worker goroutines while the op sequence
+// advances and enters cleanup. Run under -race to verify synchronization of
+// execReporter.dirs, T.cleanups, and execution phase/op state.
+func TestConcurrentTempDirCleanupAndErrorf(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		dirs     []string
+		cleanups int
+	)
+	m := Machine[*sync.WaitGroup]{
+		Init: func(ft *T) *sync.WaitGroup {
+			wg := new(sync.WaitGroup)
+			ft.Cleanup(func() { wg.Wait() })
+			return wg
+		},
+		Ops: []Op[*sync.WaitGroup]{{
+			Name: "spawn",
+			Apply: func(ft *T, wg *sync.WaitGroup) {
+				for i := range 4 {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						d := ft.TempDir()
+						mu.Lock()
+						dirs = append(dirs, d)
+						mu.Unlock()
+						ft.Cleanup(func() {
+							mu.Lock()
+							cleanups++
+							mu.Unlock()
+						})
+						ft.Errorf("worker %d failed", i)
+					}()
+				}
+			},
+		}},
+		MaxOps: 2,
+	}
+	got := m.Exec([]byte{0, 0})
+	if got.Failure == nil {
+		t.Fatal("Exec Failure = nil, want worker failure")
+	}
+	if cleanups != 8 {
+		t.Errorf("cleanups ran %d times, want 8", cleanups)
+	}
+	if len(dirs) != 8 {
+		t.Fatalf("created %d temp dirs, want 8", len(dirs))
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("temp dir %s still exists after Exec (err %v)", d, err)
+		}
+	}
+}
+
 // TestPrimaryFailureBeforeCleanup checks that a panic keeps the primary
 // failure even though the cleanups report first. Cleanups run while the
 // panic is still unwinding, so without the fix a cleanup's Errorf claims
